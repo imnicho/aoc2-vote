@@ -62,8 +62,12 @@ export class WelcomeFlow {
    * dashboard-command parser can reuse the same path. Returns the issued URL
    * (without the token) when dispatched, or null when skipped (including
    * skipped-due-to-dedupe).
+   *
+   * `trigger='join'` (default) appends "or type /dashboard for a fresh link"
+   * since the player likely doesn't know the command yet.
+   * `trigger='command'` skips that suffix — they just used the command.
    */
-  async dispatch(ign: string): Promise<string | null> {
+  async dispatch(ign: string, trigger: 'join' | 'command' = 'join'): Promise<string | null> {
     if (!IGN_RE.test(ign)) return null;
     if (!this.cfg.SESSION_SECRET) return null;
     if (!this.cfg.PUBLIC_BASE_URL) return null;
@@ -84,7 +88,7 @@ export class WelcomeFlow {
     );
     const url = `${this.cfg.PUBLIC_BASE_URL}/aoc2/vote?t=${signed.token}`;
 
-    const components = buildWelcomeComponents(ign, url);
+    const components = buildWelcomeComponents(ign, url, trigger);
     const cmd = `tellraw @a[name=${ign}] ${JSON.stringify(components)}`;
 
     if (this.cfg.PTERO_DRY_RUN) {
@@ -108,11 +112,15 @@ export class WelcomeFlow {
   }
 }
 
-export function buildWelcomeComponents(ign: string, url: string): unknown[] {
+export function buildWelcomeComponents(
+  ign: string,
+  url: string,
+  trigger: 'join' | 'command' = 'join',
+): unknown[] {
   // Differentiate components by colour only — bold is explicitly off on every
   // entry so Minecraft's style-inheritance can't leak weight into later
   // components. Brackets carry no inner spaces.
-  return [
+  const base: unknown[] = [
     { text: '[AOC2] ', color: 'gold', bold: false },
     { text: 'Welcome, ', bold: false },
     { text: ign, color: 'yellow', bold: false },
@@ -124,10 +132,19 @@ export function buildWelcomeComponents(ign: string, url: string): unknown[] {
       clickEvent: { action: 'open_url', value: url },
       hoverEvent: { action: 'show_text', contents: 'log in to the community dashboard' },
     },
-    { text: ' or type ', bold: false },
-    { text: '/dashboard', color: 'aqua', bold: false },
-    { text: '.', bold: false },
   ];
+  if (trigger === 'join') {
+    // First-time hint on join — they don't know the command yet.
+    base.push(
+      { text: ' or type ', bold: false },
+      { text: '/dashboard', color: 'aqua', bold: false },
+      { text: ' anytime.', bold: false },
+    );
+  } else {
+    // Dispatched by /dashboard — they just used it.
+    base.push({ text: '.', bold: false });
+  }
+  return base;
 }
 
 function logErr(label: string, err: unknown): void {

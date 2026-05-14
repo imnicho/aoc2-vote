@@ -44,7 +44,7 @@ export class DashboardCommandParser {
     // (`@a[name=<ign>]`) targets the correct Minecraft player profile.
     if (!this.roster.has(ign)) return { kind: 'none' };
     if (!this.allow(ign)) return { kind: 'dashboard', ign, rateLimited: true };
-    this.welcome.dispatch(ign).catch(() => undefined);
+    this.welcome.dispatch(ign, 'command').catch(() => undefined);
     return { kind: 'dashboard', ign };
   }
 
