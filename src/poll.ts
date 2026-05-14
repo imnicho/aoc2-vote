@@ -175,12 +175,18 @@ export class PollManager {
     const createdAt = now;
     const expiresAt = createdAt + this.cfg.POLL_TTL_MS;
     const shortId = this.generateUniqueShortId();
+    // `initiator_ign` is used as a display string in the vote-prompt tellraw,
+    // so store the canonical Mojang-case form from the roster (the input
+    // `ign` may have been lowercased upstream by the session-token signer).
+    const initiatorDisplay = this.canonicalIgn(lower) ?? ign;
     const txn = this.db.raw.transaction(() => {
       // ensure no open poll for this action
       this.db.expireStalePolls.run(createdAt, createdAt);
       const existing = this.db.getOpenPollByAction.get(action) as PollRow | undefined;
       if (existing) throw new PollAlreadyOpen();
-      this.db.insertPoll.run(id, shortId, action, lower, 'open', createdAt, expiresAt);
+      this.db.insertPoll.run(id, shortId, action, initiatorDisplay, 'open', createdAt, expiresAt);
+      // Votes are stored lowercased — the (poll_id, ign) PK enforces one
+      // vote per player and `hasVoted` already compares case-insensitively.
       this.db.insertVote.run(id, lower, createdAt);
     });
     try {
@@ -301,6 +307,30 @@ export class PollManager {
     for (const p of this.roster.get()) {
       const key = p.toLowerCase();
       if (!afk.has(key)) out.add(key);
+    }
+    return out;
+  }
+
+  /**
+   * Look up the canonical Mojang-case form of `lower` from the roster.
+   * Minecraft `@a[name=X]` is case-sensitive, so the broadcast selector MUST
+   * use the player's actual profile name. Returns null if the roster doesn't
+   * currently know the player (rare race window — caller falls back).
+   */
+  private canonicalIgn(lower: string): string | null {
+    const needle = lower.toLowerCase();
+    for (const p of this.roster.get()) {
+      if (p.toLowerCase() === needle) return p;
+    }
+    return null;
+  }
+
+  /** Map a list of lowercase IGNs to their canonical roster case. */
+  private canonicalize(lowers: string[]): string[] {
+    const out: string[] = [];
+    for (const v of lowers) {
+      const c = this.canonicalIgn(v);
+      if (c !== null) out.push(c);
     }
     return out;
   }
@@ -471,12 +501,18 @@ export class PollManager {
     const onlineVoters = voters.filter((v) => active.has(v.toLowerCase())).length;
     const abstainerCount = this.onlineAbstainersFor(row.id, active);
     const needed = Math.max(1, active.size - abstainerCount);
+    // `name=!<ign>` in @a is a case-sensitive string equality, so the
+    // selector exclusion list must use the player's canonical Mojang case
+    // from the roster — not the lowercase storage form. Players whose
+    // canonical case can't be resolved (already left the server) are
+    // dropped from the exclusion list; the broadcast still goes out to
+    // everyone else with the correct exclusions applied.
     const cmd = buildVotePromptCommand({
       shortId: row.short_id,
       initiator: row.initiator_ign,
       actionLabel: ACTION_LABELS[row.action as Action],
-      voted: voters,
-      abstained,
+      voted: this.canonicalize(voters),
+      abstained: this.canonicalize(abstained),
       rosterSize: active.size,
       votes: onlineVoters,
       needed,

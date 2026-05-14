@@ -429,6 +429,59 @@ test('a poll that passes emits a `say Vote passed:` (kept) and runs the action',
   db.raw.close();
 });
 
+test('broadcast selector uses canonical Mojang case for mixed-case voters', async () => {
+  const cfg = makeCfg();
+  const db = makeDb();
+  const roster = new Roster();
+  // Real-world live roster has mixed-case IGNs.
+  roster.set(['alice', 'Raedbyr', 'Turanjac', 'cdm144']);
+  const cmds: string[] = [];
+  const ptero = {
+    runCommand: async (cmd: string) => {
+      cmds.push(cmd);
+    },
+    power: async () => undefined,
+    captureTps: async () => null,
+  } as unknown as PteroClient;
+
+  const polls = new PollManager(cfg, db, ptero, roster);
+  const opened = polls.open('alice', 'day');
+  assert.equal(opened.ok, true);
+  if (!opened.ok) return;
+  const shortId = opened.result.poll.short_id;
+
+  // Raedbyr clicks YES — chat parser passes mixed-case to castVote.
+  const v = polls.castVote(shortId, 'Raedbyr');
+  assert.equal(v.ok, true);
+  await new Promise((r) => setTimeout(r, 20));
+
+  const tellraws = cmds.filter((c) => c.startsWith('tellraw '));
+  const latest = tellraws[tellraws.length - 1]!;
+  // The selector must exclude the actual player profile names. Lowercased
+  // exclusions would silently miss and Raedbyr would keep seeing buttons.
+  assert.match(latest, /name=!alice/);
+  assert.match(latest, /name=!Raedbyr/);
+  assert.doesNotMatch(latest, /name=!raedbyr/);
+  db.raw.close();
+});
+
+test('open() stores initiator_ign in canonical Mojang case for display', () => {
+  const cfg = makeCfg();
+  const db = makeDb();
+  const roster = new Roster();
+  roster.set(['Raedbyr', 'alice', 'bob']);
+  const polls = new PollManager(cfg, db, makePteroStub(), roster);
+
+  // The route layer passes session.ign, which the session-token signer
+  // lowercases. Make sure open() recovers the canonical case from the
+  // roster so chat doesn't see "raedbyr wants to set day".
+  const res = polls.open('raedbyr', 'day');
+  assert.equal(res.ok, true);
+  if (!res.ok) return;
+  assert.equal(res.result.poll.initiator_ign, 'Raedbyr');
+  db.raw.close();
+});
+
 test('castVote accepts mixed-case IGN when roster stores canonical case', () => {
   const cfg = makeCfg();
   const db = makeDb();

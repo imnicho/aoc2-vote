@@ -1,25 +1,37 @@
 /**
- * AFK tracking with two signal sources:
+ * AFK tracking on AoC2.
  *
- *  1. Console-line patterns (FTB Essentials and similar) — preferred, since
- *     they reflect the mod's own AFK detection.
- *  2. Idle-timeout fallback — any chat / vote / command activity from a
- *     player resets their last-activity timestamp; after `idleMs` of silence
- *     they're marked AFK.
+ * Investigation summary (2026-05-14): I audited the deployed modpack at
+ * `imnicho/all-of-create` — 216 mods — and found NO AFK / away / idle /
+ * tablist / nametag mod. The `Z` indicator some clients show is the vanilla
+ * tab-list idle marker driven entirely by `lastActionTime` server-side; it
+ * is not broadcast to console, so there is no mod-emitted line we could
+ * parse. FTB Essentials is in the pack but its AFK feature is not part of
+ * the NeoForge 1.21.1 port (confirmed: zero `afk` references in the live
+ * `ftbessentials.snbt`).
  *
- * Both routes write into the shared `Roster` AFK set. The poll math reads
- * `roster.activeCount()` (online − afk) as the vote denominator so AFK
- * players can't stall a poll.
+ * Consequence: the ONLY working signal on AoC2 today is the
+ * console-silence idle-timeout fallback (`idleMs`, default 5 min). Activity
+ * is reset by any chat line, `/me` emote, or `[<ign>: issued server
+ * command:` line from the player.
+ *
+ * Known limitation: a player AFK-fishing / AFK-farming with an auto-clicker
+ * won't produce console output, so the idle-timeout WILL eventually flag
+ * them. That's the desired behaviour for poll math (they aren't reactive
+ * even if they're technically in-world), but it means there's a 5-minute
+ * lag between a player going inactive and the denominator shrinking. The
+ * regex patterns below are kept for forward-compat: if a future pack ever
+ * does ship an AFK mod that emits a console line in one of these common
+ * shapes, the tracker will automatically pick it up. As of today they
+ * never fire on AoC2 — they are speculative, not load-bearing.
  */
 import { stripConsoleNoise } from './voteParser.js';
 import type { Roster } from './roster.js';
 
-// "<ign> is now AFK" / "is no longer AFK" / "is now afk" variants. Some mods
-// wrap the body in style codes (§7) which `stripConsoleNoise` does not
-// remove on its own; the regex tolerates a leading non-word prefix.
-// Lenient AFK on/off patterns — many mods wrap the body in style/colour
-// codes (e.g. FTB Essentials prepends `§7` and trails `§r`). Allow short
-// non-word leading runs and arbitrary trailing content after the keyword.
+// Speculative — no current AoC2 mod emits these. Forward-compat only; if a
+// future pack adds an AFK mod whose broadcast resembles "<ign> is now AFK"
+// the tracker will pick it up automatically. Kept lenient to tolerate style
+// codes (`§7`/`§r`) which are stripped before matching.
 const AFK_ON_RE = /^\W{0,8}(\w{3,16}) (?:is now|went|has gone) AFK\b/i;
 const AFK_OFF_RE = /^\W{0,8}(\w{3,16}) (?:is no longer|is back from|returned from|came back from) AFK\b/i;
 const CHAT_RE = /^<(\w{3,16})>\s/;
