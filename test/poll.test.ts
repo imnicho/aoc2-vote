@@ -20,6 +20,14 @@ function makeCfg(): Config {
     POLL_TTL_MS: 300_000,
     COOLDOWN_MS: 600_000,
     ROSTER_REFRESH_MS: 5_000,
+    OPERATOR_IGNS: [],
+    SESSION_SECRET: null,
+    SESSION_TTL_MS: 4 * 60 * 60 * 1000,
+    MINT_TTL_MS: 5 * 60 * 1000,
+    PUBLIC_BASE_URL: 'http://localhost:4321',
+    PTERO_DRY_RUN: false,
+    PTERO_MOCK_ROSTER: [],
+    SPAWN_COORDS: { x: -1780, y: 117, z: 1187 },
   };
 }
 
@@ -60,7 +68,7 @@ test('open() surfaces SQLITE_CONSTRAINT_UNIQUE as poll_already_open if the uniqu
 
   // Pre-seed an open poll for `day` so the inner transaction hits the
   // unique-index path even though the in-tx pre-check would also catch it.
-  db.insertPoll.run('seed', 'day', 'alice', 'open', Date.now(), Date.now() + 60_000);
+  db.insertPoll.run('seed', 'SEED00', 'day', 'alice', 'open', Date.now(), Date.now() + 60_000);
 
   const res = polls.open('bob', 'day');
   assert.equal(res.ok, false);
@@ -106,6 +114,167 @@ test('vote() surfaces vote PK collision as already_voted', () => {
   const v = polls.vote(pollId, 'bob');
   assert.equal(v.ok, false);
   if (!v.ok) assert.equal(v.err.kind, 'already_voted');
+  db.raw.close();
+});
+
+test('open() generates a 6-char Crockford short_id exposed on the row', () => {
+  const cfg = makeCfg();
+  const db = makeDb();
+  const roster = new Roster();
+  roster.set(['alice', 'bob']);
+  const polls = new PollManager(cfg, db, makePteroStub(), roster);
+
+  const res = polls.open('alice', 'weather_clear');
+  assert.equal(res.ok, true);
+  if (!res.ok) return;
+  const shortId = res.result.poll.short_id;
+  assert.match(shortId, /^[0-9A-HJKMNP-TV-Z]{6}$/);
+  db.raw.close();
+});
+
+test('castVote(shortId, ign) looks up the open poll and records a vote', () => {
+  const cfg = makeCfg();
+  const db = makeDb();
+  const roster = new Roster();
+  roster.set(['alice', 'bob', 'charlie']);
+  const polls = new PollManager(cfg, db, makePteroStub(), roster);
+
+  const opened = polls.open('alice', 'day');
+  assert.equal(opened.ok, true);
+  if (!opened.ok) return;
+  const shortId = opened.result.poll.short_id;
+
+  const res = polls.castVote(shortId, 'bob');
+  assert.equal(res.ok, true);
+
+  // Unknown short id -> poll_not_found
+  const miss = polls.castVote('ZZZZZZ', 'charlie');
+  assert.equal(miss.ok, false);
+  if (!miss.ok) assert.equal(miss.err.kind, 'poll_not_found');
+  db.raw.close();
+});
+
+test('abstain(shortId, ign) removes the player from the denominator', () => {
+  const cfg = makeCfg();
+  const db = makeDb();
+  const roster = new Roster();
+  roster.set(['alice', 'bob', 'charlie']);
+  const polls = new PollManager(cfg, db, makePteroStub(), roster);
+
+  const opened = polls.open('alice', 'night');
+  assert.equal(opened.ok, true);
+  if (!opened.ok) return;
+  const shortId = opened.result.poll.short_id;
+  const pollId = opened.result.poll.id;
+
+  const res = polls.abstain(shortId, 'charlie');
+  assert.equal(res.ok, true);
+  if (!res.ok) return;
+
+  // 3 online, 1 abstained -> needed should drop to 2.
+  assert.equal(res.result.needed, 2);
+  // The abstainer is tracked.
+  assert.deepEqual(polls.abstainersFor(pollId), ['charlie']);
+  // Public snapshot reflects abstained count.
+  const pub = polls.publicPolls().find((p) => p.id === pollId);
+  assert.ok(pub);
+  assert.equal(pub!.abstained, 1);
+  assert.equal(pub!.needed, 2);
+  db.raw.close();
+});
+
+test('pass-with-abstainers: 3 online, 1 abstains, 2 yes -> poll passes', () => {
+  const cfg = makeCfg();
+  const db = makeDb();
+  const roster = new Roster();
+  roster.set(['alice', 'bob', 'charlie']);
+  const polls = new PollManager(cfg, db, makePteroStub(), roster);
+
+  const opened = polls.open('alice', 'save_all');
+  assert.equal(opened.ok, true);
+  if (!opened.ok) return;
+  const shortId = opened.result.poll.short_id;
+  const pollId = opened.result.poll.id;
+
+  // Alice's vote was auto-recorded by open(). Charlie abstains.
+  const ab = polls.abstain(shortId, 'charlie');
+  assert.equal(ab.ok, true);
+  if (!ab.ok) return;
+  assert.equal(ab.result.executed, false);
+
+  // Bob votes — that should bring online voters (2) >= needed (2).
+  const v = polls.vote(pollId, 'bob');
+  assert.equal(v.ok, true);
+  if (!v.ok) return;
+  assert.equal(v.result.executed, true);
+  db.raw.close();
+});
+
+test('abstain() refuses if the player already voted (already_acted)', () => {
+  const cfg = makeCfg();
+  const db = makeDb();
+  const roster = new Roster();
+  roster.set(['alice', 'bob']);
+  const polls = new PollManager(cfg, db, makePteroStub(), roster);
+
+  const opened = polls.open('alice', 'tps');
+  assert.equal(opened.ok, true);
+  if (!opened.ok) return;
+  const shortId = opened.result.poll.short_id;
+
+  const ab = polls.abstain(shortId, 'alice');
+  assert.equal(ab.ok, false);
+  if (!ab.ok) assert.equal(ab.err.kind, 'already_acted');
+  db.raw.close();
+});
+
+test('abstain() refuses a non-roster ign as ign_not_online', () => {
+  const cfg = makeCfg();
+  const db = makeDb();
+  const roster = new Roster();
+  roster.set(['alice', 'bob']);
+  const polls = new PollManager(cfg, db, makePteroStub(), roster);
+
+  const opened = polls.open('alice', 'item_cleanup');
+  assert.equal(opened.ok, true);
+  if (!opened.ok) return;
+  const shortId = opened.result.poll.short_id;
+
+  const ab = polls.abstain(shortId, 'eve');
+  assert.equal(ab.ok, false);
+  if (!ab.ok) assert.equal(ab.err.kind, 'ign_not_online');
+  db.raw.close();
+});
+
+test('open() with 3 online players broadcasts a tellraw vote prompt', async () => {
+  const cfg = makeCfg();
+  const db = makeDb();
+  const roster = new Roster();
+  roster.set(['nicho', 'alice', 'bob']);
+  const cmds: string[] = [];
+  const ptero = {
+    runCommand: async (cmd: string) => {
+      cmds.push(cmd);
+    },
+    power: async () => undefined,
+    captureTps: async () => null,
+  } as unknown as PteroClient;
+
+  const polls = new PollManager(cfg, db, ptero, roster);
+  const opened = polls.open('nicho', 'weather_clear');
+  assert.equal(opened.ok, true);
+
+  // Allow floating promises to flush.
+  await new Promise((r) => setTimeout(r, 20));
+
+  const tellraw = cmds.find((c) => c.startsWith('tellraw '));
+  assert.ok(tellraw, `expected a tellraw command, got: ${cmds.join(' | ')}`);
+  // Selector excludes the initiator since they auto-voted.
+  assert.match(tellraw!, /^tellraw @a\[name=!nicho\] /);
+  // Payload references the action label and the YES/SKIP click commands.
+  assert.match(tellraw!, /clear the weather/);
+  assert.match(tellraw!, /\/me votes yes [0-9A-HJKMNP-TV-Z]{6}/);
+  assert.match(tellraw!, /\/me skips [0-9A-HJKMNP-TV-Z]{6}/);
   db.raw.close();
 });
 

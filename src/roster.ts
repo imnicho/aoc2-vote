@@ -5,6 +5,9 @@
  * Returns the player array (possibly empty) or null if the line did not match.
  */
 const LIST_REGEX = /There are (\d+) of a max of (\d+) players online:\s*(.*)$/;
+const JOIN_REGEX = /^\s*(\w{3,16}) joined the game\s*$/;
+const LEAVE_REGEX = /^\s*(\w{3,16}) left the game\s*$/;
+const IGN_RE = /^[A-Za-z0-9_]{3,16}$/;
 
 export interface ListResult {
   online: number;
@@ -29,17 +32,38 @@ export function parseListLine(line: string): ListResult | null {
   return { online, max, players };
 }
 
+export function parseJoinLine(line: string): string | null {
+  const stripped = stripPrefixes(line);
+  const m = JOIN_REGEX.exec(stripped);
+  if (!m) return null;
+  const ign = m[1] ?? '';
+  if (!IGN_RE.test(ign)) return null;
+  return ign;
+}
+
+export function parseLeaveLine(line: string): string | null {
+  const stripped = stripPrefixes(line);
+  const m = LEAVE_REGEX.exec(stripped);
+  if (!m) return null;
+  const ign = m[1] ?? '';
+  if (!IGN_RE.test(ign)) return null;
+  return ign;
+}
+
 function stripPrefixes(line: string): string {
-  return line.replace(/^\s*\[[^\]]*\]:?\s*/, '').replace(/\[[0-9;]*m/g, '');
+  return line.replace(/^\s*\[[^\]]*\]:?\s*/, '').replace(/\[[0-9;]*m/g, '');
 }
 
 /**
- * In-memory roster cache. Refreshed by ptero.ts via list-command polling.
+ * In-memory roster cache. Refreshed by ptero.ts via list-command polling and
+ * by direct join/leave console events.
  */
 export class Roster {
   private players: string[] = [];
   private lastUpdated = 0;
   private listeners = new Set<() => void>();
+  private joinListeners = new Set<(ign: string) => void>();
+  private leaveListeners = new Set<(ign: string) => void>();
 
   set(players: string[]): boolean {
     const next = [...players].sort((a, b) => a.localeCompare(b));
@@ -50,6 +74,50 @@ export class Roster {
     this.lastUpdated = Date.now();
     if (changed) this.emit();
     return changed;
+  }
+
+  /**
+   * Add an IGN to the roster (no-op if already present). Returns true if the
+   * roster changed. Fires onChange + onPlayerJoin when the IGN was new.
+   */
+  addPlayer(ign: string): boolean {
+    if (!IGN_RE.test(ign)) return false;
+    const lower = ign.toLowerCase();
+    if (this.players.some((p) => p.toLowerCase() === lower)) return false;
+    this.players = [...this.players, ign].sort((a, b) => a.localeCompare(b));
+    this.lastUpdated = Date.now();
+    this.emit();
+    for (const fn of this.joinListeners) {
+      try {
+        fn(ign);
+      } catch {
+        // listener errors do not propagate
+      }
+    }
+    return true;
+  }
+
+  /**
+   * Remove an IGN from the roster (no-op if not present). Returns true if
+   * the roster changed. Fires onChange + onPlayerLeave when the IGN was
+   * actually present.
+   */
+  removePlayer(ign: string): boolean {
+    if (!IGN_RE.test(ign)) return false;
+    const lower = ign.toLowerCase();
+    const next = this.players.filter((p) => p.toLowerCase() !== lower);
+    if (next.length === this.players.length) return false;
+    this.players = next;
+    this.lastUpdated = Date.now();
+    this.emit();
+    for (const fn of this.leaveListeners) {
+      try {
+        fn(ign);
+      } catch {
+        // listener errors do not propagate
+      }
+    }
+    return true;
   }
 
   get(): string[] {
@@ -72,6 +140,16 @@ export class Roster {
   onChange(fn: () => void): () => void {
     this.listeners.add(fn);
     return () => this.listeners.delete(fn);
+  }
+
+  onPlayerJoin(fn: (ign: string) => void): () => void {
+    this.joinListeners.add(fn);
+    return () => this.joinListeners.delete(fn);
+  }
+
+  onPlayerLeave(fn: (ign: string) => void): () => void {
+    this.leaveListeners.add(fn);
+    return () => this.leaveListeners.delete(fn);
   }
 
   private emit(): void {

@@ -5,6 +5,7 @@ import type { Action } from './actions.js';
 
 export interface PollRow {
   id: string;
+  short_id: string;
   action: Action;
   initiator_ign: string;
   status: 'open' | 'passed' | 'expired' | 'cancelled';
@@ -26,9 +27,11 @@ export interface CooldownRow {
 
 export interface DB {
   raw: Database.Database;
-  insertPoll: Database.Statement<[string, string, string, string, number, number]>;
+  insertPoll: Database.Statement<[string, string, string, string, string, number, number]>;
   getPoll: Database.Statement<[string]>;
   getOpenPollByAction: Database.Statement<[string]>;
+  getOpenPollByShortId: Database.Statement<[string]>;
+  shortIdExists: Database.Statement<[string]>;
   listOpenPolls: Database.Statement<[]>;
   expireStalePolls: Database.Statement<[number, number]>;
   setPollStatus: Database.Statement<[string, number, string]>;
@@ -48,6 +51,7 @@ export function openDb(path: string): DB {
   raw.exec(`
     CREATE TABLE IF NOT EXISTS polls (
       id TEXT PRIMARY KEY,
+      short_id TEXT NOT NULL DEFAULT '',
       action TEXT NOT NULL,
       initiator_ign TEXT NOT NULL,
       status TEXT NOT NULL CHECK(status IN ('open','passed','expired','cancelled')),
@@ -57,6 +61,8 @@ export function openDb(path: string): DB {
     );
     CREATE UNIQUE INDEX IF NOT EXISTS polls_one_open_per_action
       ON polls(action) WHERE status = 'open';
+    CREATE UNIQUE INDEX IF NOT EXISTS polls_one_open_per_short_id
+      ON polls(short_id) WHERE status = 'open' AND short_id != '';
 
     CREATE TABLE IF NOT EXISTS votes (
       poll_id TEXT NOT NULL REFERENCES polls(id) ON DELETE CASCADE,
@@ -71,15 +77,36 @@ export function openDb(path: string): DB {
     );
   `);
 
+  // Drop the legacy operators table from before the bearer-session redesign.
+  // Operators are now stateless — membership is checked against OPERATOR_IGNS
+  // at session-mint time, and the resulting bearer carries the flag.
+  raw.exec(`DROP TABLE IF EXISTS operators`);
+
+  // Migration: add short_id to existing polls tables that pre-date the column.
+  const cols = raw.prepare(`PRAGMA table_info(polls)`).all() as { name: string }[];
+  if (!cols.some((c) => c.name === 'short_id')) {
+    raw.exec(`ALTER TABLE polls ADD COLUMN short_id TEXT NOT NULL DEFAULT ''`);
+    raw.exec(
+      `CREATE UNIQUE INDEX IF NOT EXISTS polls_one_open_per_short_id
+       ON polls(short_id) WHERE status = 'open' AND short_id != ''`,
+    );
+  }
+
   return {
     raw,
     insertPoll: raw.prepare(
-      `INSERT INTO polls (id, action, initiator_ign, status, created_at, expires_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO polls (id, short_id, action, initiator_ign, status, created_at, expires_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
     ),
     getPoll: raw.prepare(`SELECT * FROM polls WHERE id = ?`),
     getOpenPollByAction: raw.prepare(
       `SELECT * FROM polls WHERE action = ? AND status = 'open'`,
+    ),
+    getOpenPollByShortId: raw.prepare(
+      `SELECT * FROM polls WHERE short_id = ? AND status = 'open'`,
+    ),
+    shortIdExists: raw.prepare(
+      `SELECT 1 FROM polls WHERE short_id = ? AND status = 'open'`,
     ),
     listOpenPolls: raw.prepare(`SELECT * FROM polls WHERE status = 'open'`),
     expireStalePolls: raw.prepare(

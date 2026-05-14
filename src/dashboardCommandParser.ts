@@ -1,0 +1,62 @@
+/**
+ * Listens to Pterodactyl console output for the `/me dashboard` (or
+ * `/me dashboards`) emote and replies with a fresh welcome tellraw to the
+ * requesting player.
+ */
+import { stripConsoleNoise } from './voteParser.js';
+import type { Roster } from './roster.js';
+import type { WelcomeFlow } from './welcomeFlow.js';
+
+const DASHBOARD_RE = /^\* (\w{3,16}) dashboards?\s*$/;
+const IGN_RE = /^[A-Za-z0-9_]{3,16}$/;
+const PER_IGN_LIMIT = 3;
+const WINDOW_MS = 60_000;
+
+interface RateRecord {
+  count: number;
+  windowStart: number;
+}
+
+export class DashboardCommandParser {
+  private readonly roster: Roster;
+  private readonly welcome: WelcomeFlow;
+  private rate = new Map<string, RateRecord>();
+
+  constructor(roster: Roster, welcome: WelcomeFlow) {
+    this.roster = roster;
+    this.welcome = welcome;
+  }
+
+  handleLine(raw: string): {
+    kind: 'dashboard' | 'none';
+    ign?: string;
+    rateLimited?: boolean;
+  } {
+    const stripped = stripConsoleNoise(raw);
+    const m = DASHBOARD_RE.exec(stripped);
+    if (!m) return { kind: 'none' };
+    const ign = m[1] ?? '';
+    if (!IGN_RE.test(ign)) return { kind: 'none' };
+    if (!this.roster.has(ign)) return { kind: 'none' };
+    if (!this.allow(ign)) return { kind: 'dashboard', ign, rateLimited: true };
+    this.welcome.dispatch(ign).catch(() => undefined);
+    return { kind: 'dashboard', ign };
+  }
+
+  private allow(ign: string): boolean {
+    const key = ign.toLowerCase();
+    const now = Date.now();
+    const rec = this.rate.get(key);
+    if (!rec || now - rec.windowStart >= WINDOW_MS) {
+      this.rate.set(key, { count: 1, windowStart: now });
+      return true;
+    }
+    if (rec.count >= PER_IGN_LIMIT) return false;
+    rec.count += 1;
+    return true;
+  }
+
+  rateCount(ign: string): number {
+    return this.rate.get(ign.toLowerCase())?.count ?? 0;
+  }
+}

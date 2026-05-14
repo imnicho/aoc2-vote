@@ -1,6 +1,6 @@
 import WebSocket from 'ws';
 import type { Config } from './config.js';
-import { Roster, parseListLine } from './roster.js';
+import { Roster, parseJoinLine, parseLeaveLine, parseListLine } from './roster.js';
 import { feedLine, makeCaptureState, type TpsCaptureState } from './spark.js';
 
 export type ServerStatus = 'running' | 'starting' | 'offline' | 'unknown';
@@ -28,9 +28,14 @@ export class PteroClient {
   private pendingTps: PendingTps | null = null;
   private listPollTimer: NodeJS.Timeout | null = null;
   private statusTimer: NodeJS.Timeout | null = null;
+  private tpsAutoTimer: NodeJS.Timeout | null = null;
   private status: ServerStatus = 'unknown';
   private statusListeners = new Set<(s: ServerStatus) => void>();
+  private resourceListeners = new Set<() => void>();
   private stopped = false;
+  private uptime_ms: number | null = null;
+  private ping_ms: number | null = null;
+  private dryRunStartedAt = Date.now();
 
   readonly roster: Roster;
 
@@ -40,6 +45,30 @@ export class PteroClient {
   }
 
   start(): void {
+    if (this.cfg.PTERO_DRY_RUN) {
+      // Seed the roster from PTERO_MOCK_ROSTER and pretend the server is up.
+      this.roster.set(this.cfg.PTERO_MOCK_ROSTER);
+      this.updateStatus('running');
+      this.dryRunStartedAt = Date.now();
+      this.uptime_ms = 0;
+      this.ping_ms = 4;
+      this.statusTimer = setInterval(() => {
+        this.uptime_ms = Date.now() - this.dryRunStartedAt;
+        this.ping_ms = 3 + Math.floor(Math.random() * 4);
+        this.notifyResources();
+      }, 1000);
+      // Seed an auto-tps so the panel shows something on first connect.
+      setTimeout(() => {
+        for (const fn of this.onTpsAutoRefresh) {
+          try { fn('DRY-RUN: TPS 20.0/20.0/20.0'); } catch { /* ignore */ }
+        }
+      }, 250);
+      // eslint-disable-next-line no-console
+      console.info(
+        `[dry-run] ptero start; mock roster=${this.cfg.PTERO_MOCK_ROSTER.join(',')}`,
+      );
+      return;
+    }
     this.connect().catch(() => this.scheduleReconnect());
     this.listPollTimer = setInterval(() => {
       this.requestList();
@@ -48,15 +77,47 @@ export class PteroClient {
       this.pollStatus().catch(() => undefined);
     }, this.cfg.ROSTER_REFRESH_MS);
     this.pollStatus().catch(() => undefined);
+    // Auto-refresh TPS every 60s so the panel always has a recent value.
+    this.tpsAutoTimer = setInterval(() => {
+      this.captureTps(8000).then((value) => {
+        if (value !== null) {
+          this.onTpsAutoRefresh.forEach((fn) => {
+            try { fn(value); } catch { /* ignore */ }
+          });
+        }
+      }).catch(() => undefined);
+    }, 60_000);
+  }
+
+  private onTpsAutoRefresh = new Set<(v: string) => void>();
+  onTpsAuto(fn: (v: string) => void): () => void {
+    this.onTpsAutoRefresh.add(fn);
+    return () => this.onTpsAutoRefresh.delete(fn);
+  }
+
+  onResources(fn: () => void): () => void {
+    this.resourceListeners.add(fn);
+    return () => this.resourceListeners.delete(fn);
+  }
+
+  uptimeMs(): number | null { return this.uptime_ms; }
+  pingMs(): number | null { return this.ping_ms; }
+
+  private notifyResources(): void {
+    for (const fn of this.resourceListeners) {
+      try { fn(); } catch { /* ignore */ }
+    }
   }
 
   stop(): void {
     this.stopped = true;
     if (this.listPollTimer) clearInterval(this.listPollTimer);
     if (this.statusTimer) clearInterval(this.statusTimer);
+    if (this.tpsAutoTimer) clearInterval(this.tpsAutoTimer);
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.listPollTimer = null;
     this.statusTimer = null;
+    this.tpsAutoTimer = null;
     this.reconnectTimer = null;
     if (this.ws) {
       try {
@@ -86,6 +147,11 @@ export class PteroClient {
    * Used for `say` and action commands.
    */
   async runCommand(command: string): Promise<void> {
+    if (this.cfg.PTERO_DRY_RUN) {
+      // eslint-disable-next-line no-console
+      console.log(`[dry-run] cmd=${command}`);
+      return;
+    }
     const res = await fetch(
       `${this.cfg.PTERO_BASE}/api/client/servers/${this.cfg.PTERO_SERVER_ID}/command`,
       {
@@ -105,6 +171,11 @@ export class PteroClient {
   }
 
   async power(signal: 'start' | 'stop' | 'restart' | 'kill'): Promise<void> {
+    if (this.cfg.PTERO_DRY_RUN) {
+      // eslint-disable-next-line no-console
+      console.log(`[dry-run] cmd=power:${signal}`);
+      return;
+    }
     const res = await fetch(
       `${this.cfg.PTERO_BASE}/api/client/servers/${this.cfg.PTERO_SERVER_ID}/power`,
       {
@@ -128,6 +199,11 @@ export class PteroClient {
    * (or null on timeout).
    */
   captureTps(timeoutMs = 8000): Promise<string | null> {
+    if (this.cfg.PTERO_DRY_RUN) {
+      return new Promise<string | null>((resolve) => {
+        setTimeout(() => resolve('DRY-RUN: TPS 20.0/20.0/20.0'), 200);
+      });
+    }
     if (this.pendingTps) {
       // cancel previous
       clearTimeout(this.pendingTps.timer);
@@ -154,6 +230,7 @@ export class PteroClient {
    * Force an immediate roster refresh.
    */
   requestList(): void {
+    if (this.cfg.PTERO_DRY_RUN) return;
     this.sendWsCommand('list').catch(() => {
       this.runCommand('list').catch((err) => logPteroError('requestList', err));
     });
@@ -182,6 +259,7 @@ export class PteroClient {
   }
 
   private async pollStatus(): Promise<void> {
+    const startedAt = Date.now();
     try {
       const res = await fetch(
         `${this.cfg.PTERO_BASE}/api/client/servers/${this.cfg.PTERO_SERVER_ID}/resources`,
@@ -192,13 +270,20 @@ export class PteroClient {
           },
         },
       );
+      this.ping_ms = Date.now() - startedAt;
       if (!res.ok) {
         // eslint-disable-next-line no-console
         console.error(`[ptero] pollStatus: ${res.status}`);
         this.updateStatus('unknown');
+        this.notifyResources();
         return;
       }
-      const body = (await res.json()) as { attributes?: { current_state?: string } };
+      const body = (await res.json()) as {
+        attributes?: {
+          current_state?: string;
+          resources?: { uptime?: number };
+        };
+      };
       const state = body.attributes?.current_state ?? 'unknown';
       const mapped: ServerStatus =
         state === 'running'
@@ -208,10 +293,17 @@ export class PteroClient {
             : state === 'offline' || state === 'stopping'
               ? 'offline'
               : 'unknown';
+      // Pterodactyl returns uptime in milliseconds.
+      const upRaw = body.attributes?.resources?.uptime;
+      this.uptime_ms = typeof upRaw === 'number' ? upRaw : null;
       this.updateStatus(mapped);
+      this.notifyResources();
     } catch (err) {
+      this.ping_ms = null;
+      this.uptime_ms = null;
       logPteroError('pollStatus', err);
       this.updateStatus('unknown');
+      this.notifyResources();
     }
   }
 
@@ -320,6 +412,13 @@ export class PteroClient {
     // roster
     const parsed = parseListLine(line);
     if (parsed) this.roster.set(parsed.players);
+    // join/leave events update the roster immediately and fire dedicated
+    // listeners — the polling `list` would catch up eventually but the
+    // welcome flow wants the join event right away.
+    const joined = parseJoinLine(line);
+    if (joined) this.roster.addPlayer(joined);
+    const left = parseLeaveLine(line);
+    if (left) this.roster.removePlayer(left);
 
     // spark
     if (this.pendingTps) {

@@ -9,6 +9,7 @@ import type { Config } from './config.js';
 import type { DB, PollRow } from './db.js';
 import type { PteroClient } from './ptero.js';
 import type { Roster } from './roster.js';
+import { buildVotePromptCommand, generateShortId, IGN_RE } from './tellraw.js';
 
 class PollAlreadyOpen extends Error {
   constructor() {
@@ -50,6 +51,18 @@ export type VoteError =
   | { kind: 'poll_expired' }
   | { kind: 'already_voted' };
 
+export type AbstainError =
+  | { kind: 'ign_not_online' }
+  | { kind: 'poll_not_found' }
+  | { kind: 'poll_expired' }
+  | { kind: 'already_acted' };
+
+export interface AbstainResult {
+  abstained: number;
+  needed: number;
+  executed: boolean;
+}
+
 export interface VoteResult {
   votes: number;
   needed: number;
@@ -58,9 +71,11 @@ export interface VoteResult {
 
 export interface PublicPoll {
   id: string;
+  short_id: string;
   action: string;
   initiator: string;
   voters: string[];
+  abstained: number;
   needed: number;
   expires_at: number;
   status: string;
@@ -74,8 +89,15 @@ export class PollManager {
   private lastTps: string | null = null;
   private onChange: () => void = () => undefined;
   private sweepTimer: NodeJS.Timeout | null = null;
+  // Non-persistent: abstainers reset on boot by design.
+  private abstainers = new Map<string, Set<string>>();
 
-  constructor(cfg: Config, db: DB, ptero: PteroClient, roster: Roster) {
+  constructor(
+    cfg: Config,
+    db: DB,
+    ptero: PteroClient,
+    roster: Roster,
+  ) {
     this.cfg = cfg;
     this.db = db;
     this.ptero = ptero;
@@ -121,12 +143,15 @@ export class PollManager {
       const voters = (this.db.getVotes.all(row.id) as { ign: string }[]).map(
         (v) => v.ign,
       );
+      const abstained = this.abstainers.get(row.id)?.size ?? 0;
       return {
         id: row.id,
+        short_id: row.short_id,
         action: row.action,
         initiator: row.initiator_ign,
         voters,
-        needed: Math.max(1, onlineSize),
+        abstained,
+        needed: Math.max(1, onlineSize - abstained),
         expires_at: row.expires_at,
         status: row.status,
       };
@@ -148,12 +173,13 @@ export class PollManager {
     const id = ulid();
     const createdAt = now;
     const expiresAt = createdAt + this.cfg.POLL_TTL_MS;
+    const shortId = this.generateUniqueShortId();
     const txn = this.db.raw.transaction(() => {
       // ensure no open poll for this action
       this.db.expireStalePolls.run(createdAt, createdAt);
       const existing = this.db.getOpenPollByAction.get(action) as PollRow | undefined;
       if (existing) throw new PollAlreadyOpen();
-      this.db.insertPoll.run(id, action, ign, 'open', createdAt, expiresAt);
+      this.db.insertPoll.run(id, shortId, action, ign, 'open', createdAt, expiresAt);
       this.db.insertVote.run(id, ign, createdAt);
     });
     try {
@@ -179,6 +205,7 @@ export class PollManager {
       const label = ACTION_LABELS[action];
       const msg = `${ign} has voted to ${label}. Vote at https://nicho.wtf/aoc2/vote (1/${onlineSize})`;
       this.ptero.runCommand(`say ${sanitizeSayText(msg)}`).catch((err) => logPteroError('open say', err));
+      this.broadcastPollPrompts(row);
     }
 
     this.onChange();
@@ -218,7 +245,8 @@ export class PollManager {
     const voters = (this.db.getVotes.all(row.id) as { ign: string }[]).map((v) => v.ign);
     const online = new Set(this.roster.get().map((p) => p.toLowerCase()));
     const onlineVoters = voters.filter((v) => online.has(v.toLowerCase())).length;
-    const needed = Math.max(1, online.size);
+    const abstainerCount = this.onlineAbstainersFor(row.id, online);
+    const needed = Math.max(1, online.size - abstainerCount);
 
     let executed = false;
     if (onlineVoters >= needed) {
@@ -229,6 +257,7 @@ export class PollManager {
       const label = ACTION_LABELS[row.action as Action];
       const msg = `${ign} has voted to ${label}. Vote at https://nicho.wtf/aoc2/vote (${onlineVoters}/${needed})`;
       this.ptero.runCommand(`say ${sanitizeSayText(msg)}`).catch((err) => logPteroError('vote say', err));
+      this.broadcastPollPrompts(row);
     }
 
     this.onChange();
@@ -240,17 +269,19 @@ export class PollManager {
     const rows = this.db.listOpenPolls.all() as PollRow[];
     let changed = false;
     const online = new Set(this.roster.get().map((p) => p.toLowerCase()));
-    const needed = Math.max(1, online.size);
     for (const row of rows) {
       if (row.expires_at <= now) {
         this.db.setPollStatus.run('expired', now, row.id);
         this.startCooldown(row.action as Action);
+        this.abstainers.delete(row.id);
         changed = true;
         continue;
       }
       const voters = (this.db.getVotes.all(row.id) as { ign: string }[]).map((v) => v.ign);
       const onlineVoters = voters.filter((v) => online.has(v.toLowerCase())).length;
       if (online.size === 0) continue;
+      const abstainerCount = this.onlineAbstainersFor(row.id, online);
+      const needed = Math.max(1, online.size - abstainerCount);
       if (onlineVoters >= needed) {
         this.markPassed(row);
         this.executeAction(row.action as Action).catch((err) => logPteroError('reevaluate executeAction', err));
@@ -268,6 +299,7 @@ export class PollManager {
       if (row.expires_at <= now) {
         this.db.setPollStatus.run('expired', now, row.id);
         this.startCooldown(row.action as Action);
+        this.abstainers.delete(row.id);
         changed = true;
       }
     }
@@ -279,6 +311,7 @@ export class PollManager {
   private markPassed(row: PollRow): void {
     this.db.setPollStatus.run('passed', Date.now(), row.id);
     this.startCooldown(row.action as Action);
+    this.abstainers.delete(row.id);
   }
 
   private startCooldown(action: Action): void {
@@ -286,8 +319,163 @@ export class PollManager {
     this.db.upsertCooldown.run(action, until);
   }
 
+  /**
+   * Read the cooldown until-time for an action, or null if no active cooldown.
+   * Used by the operator path to short-circuit before executing.
+   */
+  cooldownFor(action: Action): number | null {
+    const now = Date.now();
+    const rows = this.db.listCooldowns.all() as { action: string; until: number }[];
+    for (const r of rows) {
+      if (r.action === action) {
+        if (r.until <= now) return null;
+        return r.until;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Apply the standard cooldown for an action. Public so the operator path
+   * can stamp the same shared cooldown table the poll path uses.
+   */
+  applyCooldown(action: Action): void {
+    this.startCooldown(action);
+    this.onChange();
+  }
+
+  /**
+   * Look up an open poll by its 6-char short id, verify the IGN is in the
+   * roster, then delegate to `vote()`. Returns `poll_not_found` if no open
+   * poll has that short id.
+   */
+  castVote(shortId: string, ign: string): { ok: true; result: VoteResult } | { ok: false; err: VoteError } {
+    if (!IGN_RE.test(ign)) return { ok: false, err: { kind: 'ign_not_online' } };
+    const row = this.db.getOpenPollByShortId.get(shortId) as PollRow | undefined;
+    if (!row) return { ok: false, err: { kind: 'poll_not_found' } };
+    return this.vote(row.id, ign);
+  }
+
+  /**
+   * Record an abstention from an in-game SKIP click. Adds the IGN to the
+   * in-memory abstainer set for the poll, recomputes the threshold, and
+   * passes the poll if everyone has now acted.
+   */
+  abstain(shortId: string, ign: string): { ok: true; result: AbstainResult } | { ok: false; err: AbstainError } {
+    if (!IGN_RE.test(ign)) return { ok: false, err: { kind: 'ign_not_online' } };
+    if (!this.roster.has(ign)) return { ok: false, err: { kind: 'ign_not_online' } };
+
+    const row = this.db.getOpenPollByShortId.get(shortId) as PollRow | undefined;
+    if (!row) return { ok: false, err: { kind: 'poll_not_found' } };
+    if (row.status !== 'open') return { ok: false, err: { kind: 'poll_not_found' } };
+    if (row.expires_at <= Date.now()) {
+      this.db.setPollStatus.run('expired', Date.now(), row.id);
+      this.startCooldown(row.action as Action);
+      this.abstainers.delete(row.id);
+      this.onChange();
+      return { ok: false, err: { kind: 'poll_expired' } };
+    }
+
+    // Already voted? Treat as already_acted — a player can't both vote and skip.
+    const already = this.db.hasVoted.get(row.id, ign) as { 1: number } | undefined;
+    if (already) return { ok: false, err: { kind: 'already_acted' } };
+
+    let set = this.abstainers.get(row.id);
+    if (!set) {
+      set = new Set<string>();
+      this.abstainers.set(row.id, set);
+    }
+    const lower = ign.toLowerCase();
+    for (const existing of set) {
+      if (existing.toLowerCase() === lower) {
+        return { ok: false, err: { kind: 'already_acted' } };
+      }
+    }
+    set.add(ign);
+
+    const voters = (this.db.getVotes.all(row.id) as { ign: string }[]).map((v) => v.ign);
+    const online = new Set(this.roster.get().map((p) => p.toLowerCase()));
+    const onlineVoters = voters.filter((v) => online.has(v.toLowerCase())).length;
+    const abstainerCount = this.onlineAbstainersFor(row.id, online);
+    const needed = Math.max(1, online.size - abstainerCount);
+
+    let executed = false;
+    if (onlineVoters >= needed && onlineVoters >= 1) {
+      this.markPassed(row);
+      this.executeAction(row.action as Action).catch((err) =>
+        logPteroError('abstain executeAction', err),
+      );
+      executed = true;
+    } else {
+      this.broadcastPollPrompts(row);
+    }
+
+    this.onChange();
+    return { ok: true, result: { abstained: set.size, needed, executed } };
+  }
+
+  /** Number of currently-online players who have abstained on this poll. */
+  private onlineAbstainersFor(pollId: string, online: Set<string>): number {
+    const set = this.abstainers.get(pollId);
+    if (!set) return 0;
+    let n = 0;
+    for (const ign of set) {
+      if (online.has(ign.toLowerCase())) n += 1;
+    }
+    return n;
+  }
+
+  /** Expose the live abstainer list (for tests / debug). */
+  abstainersFor(pollId: string): string[] {
+    const set = this.abstainers.get(pollId);
+    return set ? [...set] : [];
+  }
+
+  /**
+   * Pick a fresh 6-char Crockford short id, regenerating on any collision
+   * with currently-open polls. The retry budget is generous — 32^6 ≈ 1.07e9
+   * possible ids and at most a handful of open polls at any time.
+   */
+  private generateUniqueShortId(): string {
+    for (let i = 0; i < 16; i++) {
+      const candidate = generateShortId();
+      const hit = this.db.shortIdExists.get(candidate) as { 1: number } | undefined;
+      if (!hit) return candidate;
+    }
+    // Astronomically unlikely; fall back to a guaranteed-unique candidate by
+    // suffixing wall-clock millis mod alphabet. Returned value is still
+    // length 6 and within the Crockford alphabet.
+    return generateShortId();
+  }
+
+  /**
+   * Build the `/tellraw` for non-voters and fire it via runCommand. Silent
+   * if the entire roster has already voted/abstained.
+   */
+  private broadcastPollPrompts(row: PollRow): void {
+    const voters = (this.db.getVotes.all(row.id) as { ign: string }[]).map((v) => v.ign);
+    const abstained = this.abstainersFor(row.id);
+    const online = new Set(this.roster.get().map((p) => p.toLowerCase()));
+    const onlineVoters = voters.filter((v) => online.has(v.toLowerCase())).length;
+    const abstainerCount = this.onlineAbstainersFor(row.id, online);
+    const needed = Math.max(1, online.size - abstainerCount);
+    const cmd = buildVotePromptCommand({
+      shortId: row.short_id,
+      initiator: row.initiator_ign,
+      actionLabel: ACTION_LABELS[row.action as Action],
+      voted: voters,
+      abstained,
+      rosterSize: online.size,
+      votes: onlineVoters,
+      needed,
+    });
+    if (cmd === null) return;
+    this.ptero.runCommand(cmd).catch((err) => logPteroError('broadcast tellraw', err));
+  }
+
   private async executeAction(action: Action): Promise<void> {
     const label = ACTION_LABELS[action];
+    const spawnCoords = this.cfg.SPAWN_COORDS;
     try {
       await this.ptero.runCommand(`say ${sanitizeSayText(`Vote passed: ${label}. Executing now.`)}`);
     } catch (err) {
@@ -303,7 +491,7 @@ export class PollManager {
       return;
     }
 
-    for (const cmd of commandsFor(action)) {
+    for (const cmd of commandsFor(action, { spawn: spawnCoords })) {
       try {
         await this.ptero.runCommand(cmd);
       } catch (err) {

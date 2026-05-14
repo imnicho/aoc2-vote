@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Roster, parseListLine } from '../src/roster.js';
+import { Roster, parseJoinLine, parseLeaveLine, parseListLine } from '../src/roster.js';
 
 test('parses a typical vanilla list response', () => {
   const r = parseListLine('There are 3 of a max of 20 players online: alice, bob, charlie');
@@ -50,4 +50,32 @@ test('Roster.size reflects the current roster', () => {
   assert.equal(r.size(), 3);
   r.set([]);
   assert.equal(r.size(), 0);
+});
+
+test('parseJoinLine matches "X joined the game" with log prefixes', () => {
+  assert.equal(parseJoinLine('[12:34:56 INFO]: nicho joined the game'), 'nicho');
+  assert.equal(parseJoinLine('[Server thread/INFO]: alice joined the game'), 'alice');
+  assert.equal(parseJoinLine('* nicho votes yes ABCDEF'), null);
+  assert.equal(parseJoinLine('nicho left the game'), null);
+  // Too-short IGN
+  assert.equal(parseJoinLine('xy joined the game'), null);
+});
+
+test('parseLeaveLine matches "X left the game"', () => {
+  assert.equal(parseLeaveLine('[12:34:56 INFO]: nicho left the game'), 'nicho');
+  assert.equal(parseLeaveLine('nicho joined the game'), null);
+});
+
+test('Roster.addPlayer / removePlayer fire join/leave listeners', () => {
+  const r = new Roster();
+  const joined: string[] = [];
+  const left: string[] = [];
+  r.onPlayerJoin((ign) => joined.push(ign));
+  r.onPlayerLeave((ign) => left.push(ign));
+  assert.equal(r.addPlayer('nicho'), true);
+  assert.equal(r.addPlayer('nicho'), false); // duplicate
+  assert.equal(r.removePlayer('nicho'), true);
+  assert.equal(r.removePlayer('nicho'), false); // not present
+  assert.deepEqual(joined, ['nicho']);
+  assert.deepEqual(left, ['nicho']);
 });

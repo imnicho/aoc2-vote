@@ -6,13 +6,18 @@ export interface StateSnapshot {
   cooldowns: Record<string, number>;
   last_tps: string | null;
   server_status: 'running' | 'starting' | 'offline' | 'unknown';
+  operator_enabled: boolean;
+  uptime_ms: number | null;
+  ping_ms: number | null;
 }
 
 export interface PublicPoll {
   id: string;
+  short_id: string;
   action: string;
   initiator: string;
   voters: string[];
+  abstained: number;
   needed: number;
   expires_at: number;
   status: string;
