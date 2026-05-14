@@ -64,6 +64,8 @@ export class Roster {
   private listeners = new Set<() => void>();
   private joinListeners = new Set<(ign: string) => void>();
   private leaveListeners = new Set<(ign: string) => void>();
+  // AFK tracking — all entries lowercase. Ephemeral, not persisted.
+  private afk = new Set<string>();
 
   set(players: string[]): boolean {
     const next = [...players].sort((a, b) => a.localeCompare(b));
@@ -72,6 +74,13 @@ export class Roster {
       next.some((p, i) => p !== this.players[i]);
     this.players = next;
     this.lastUpdated = Date.now();
+    // Drop AFK entries for anyone who's no longer online.
+    if (this.afk.size > 0) {
+      const online = new Set(this.players.map((p) => p.toLowerCase()));
+      for (const k of this.afk) {
+        if (!online.has(k)) this.afk.delete(k);
+      }
+    }
     if (changed) this.emit();
     return changed;
   }
@@ -109,6 +118,7 @@ export class Roster {
     if (next.length === this.players.length) return false;
     this.players = next;
     this.lastUpdated = Date.now();
+    this.afk.delete(lower);
     this.emit();
     for (const fn of this.leaveListeners) {
       try {
@@ -131,6 +141,46 @@ export class Roster {
 
   size(): number {
     return this.players.length;
+  }
+
+  /**
+   * Mark `ign` as AFK. Only flags players already in the roster; returns true
+   * when the state actually changed. Fires onChange on transition.
+   */
+  markAfk(ign: string): boolean {
+    if (!IGN_RE.test(ign)) return false;
+    const lower = ign.toLowerCase();
+    if (!this.players.some((p) => p.toLowerCase() === lower)) return false;
+    if (this.afk.has(lower)) return false;
+    this.afk.add(lower);
+    this.emit();
+    return true;
+  }
+
+  /**
+   * Clear the AFK flag for `ign`. Returns true if the state changed (i.e.,
+   * the player was AFK and is now active). Fires onChange on transition.
+   */
+  markActive(ign: string): boolean {
+    if (!IGN_RE.test(ign)) return false;
+    const lower = ign.toLowerCase();
+    if (!this.afk.has(lower)) return false;
+    this.afk.delete(lower);
+    this.emit();
+    return true;
+  }
+
+  isAfk(ign: string): boolean {
+    return this.afk.has(ign.toLowerCase());
+  }
+
+  afkList(): string[] {
+    return [...this.afk];
+  }
+
+  /** Online players minus AFK players — used as the vote denominator. */
+  activeCount(): number {
+    return Math.max(0, this.players.length - this.afk.size);
   }
 
   age(): number {

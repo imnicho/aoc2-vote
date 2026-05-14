@@ -81,32 +81,34 @@ export function buildVotePromptComponents(
   input: BuildComponentsInput,
 ): unknown[] {
   const { shortId, initiator, actionLabel, votes, needed } = input;
+  // Differentiate by colour only — every component sets bold:false explicitly
+  // so style-inheritance from a preceding component never leaks weight.
   return [
-    { text: '[VOTE] ', color: 'gold', bold: true },
-    { text: initiator, color: 'yellow' },
-    { text: ' wants to ' },
-    { text: actionLabel, color: 'aqua' },
-    { text: ` — ${votes}/${needed} voted\n` },
-    { text: '[ ', color: 'gray' },
+    { text: '[VOTE] ', color: 'gold', bold: false },
+    { text: initiator, color: 'yellow', bold: false },
+    { text: ' wants to ', bold: false },
+    { text: actionLabel, color: 'aqua', bold: false },
+    { text: ` — ${votes}/${needed} voted\n`, bold: false },
+    { text: '[', color: 'gray', bold: false },
     {
       text: 'YES',
       color: 'green',
-      bold: true,
+      bold: false,
       clickEvent: { action: 'run_command', value: `/vote yes ${shortId}` },
       hoverEvent: { action: 'show_text', contents: 'cast your vote' },
     },
-    { text: ' ]   [ ', color: 'gray' },
+    { text: ']   [', color: 'gray', bold: false },
     {
       text: 'SKIP',
       color: 'red',
-      bold: true,
+      bold: false,
       clickEvent: { action: 'run_command', value: `/vote skip ${shortId}` },
       hoverEvent: {
         action: 'show_text',
         contents: 'abstain — remove yourself from this poll',
       },
     },
-    { text: ' ]', color: 'gray' },
+    { text: ']', color: 'gray', bold: false },
   ];
 }
 

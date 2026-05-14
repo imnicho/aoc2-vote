@@ -2,6 +2,7 @@ export type Subscriber = (payload: string) => void;
 
 export interface StateSnapshot {
   online: string[];
+  afk: string[];
   polls: PublicPoll[];
   cooldowns: Record<string, number>;
   last_tps: string | null;

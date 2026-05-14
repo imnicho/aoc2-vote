@@ -278,6 +278,243 @@ test('open() with 3 online players broadcasts a tellraw vote prompt', async () =
   db.raw.close();
 });
 
+test('AFK players are excluded from the vote denominator (open + publicPolls)', () => {
+  const cfg = makeCfg();
+  const db = makeDb();
+  const roster = new Roster();
+  roster.set(['nicho', 'alice', 'bob', 'carol']);
+  // bob is AFK — he should not count toward the threshold.
+  roster.markAfk('bob');
+  const polls = new PollManager(cfg, db, makePteroStub(), roster);
+
+  const res = polls.open('nicho', 'day');
+  assert.equal(res.ok, true);
+  if (!res.ok) return;
+
+  const pub = polls.publicPolls().find((p) => p.id === res.result.poll.id);
+  assert.ok(pub);
+  // Active count is 3 (nicho + alice + carol). Threshold = 3.
+  assert.equal(pub!.needed, 3);
+  db.raw.close();
+});
+
+test('an AFK player who votes is treated as active (denominator updates)', () => {
+  const cfg = makeCfg();
+  const db = makeDb();
+  const roster = new Roster();
+  roster.set(['nicho', 'alice', 'bob', 'carol']);
+  roster.markAfk('bob');
+  const polls = new PollManager(cfg, db, makePteroStub(), roster);
+
+  const opened = polls.open('nicho', 'night');
+  assert.equal(opened.ok, true);
+  if (!opened.ok) return;
+
+  // simulate the AFK tracker reacting to bob's vote-cast emote: he comes
+  // back from AFK and is counted in the denominator again.
+  roster.markActive('bob');
+  const v = polls.vote(opened.result.poll.id, 'bob');
+  assert.equal(v.ok, true);
+  // active = 4 now, voters = 2 (nicho + bob), threshold = 4 -> not yet passed.
+  if (v.ok) assert.equal(v.result.executed, false);
+  db.raw.close();
+});
+
+test('open() with only the initiator non-AFK executes immediately', () => {
+  const cfg = makeCfg();
+  const db = makeDb();
+  const roster = new Roster();
+  roster.set(['nicho', 'alice', 'bob']);
+  // Everyone but nicho is AFK -> initiator alone among the active.
+  roster.markAfk('alice');
+  roster.markAfk('bob');
+  const polls = new PollManager(cfg, db, makePteroStub(), roster);
+
+  const res = polls.open('nicho', 'day');
+  assert.equal(res.ok, true);
+  if (!res.ok) return;
+  assert.equal(res.result.executedImmediately, true);
+  db.raw.close();
+});
+
+test('open() emits exactly one tellraw and zero say for the poll prompt', async () => {
+  const cfg = makeCfg();
+  const db = makeDb();
+  const roster = new Roster();
+  roster.set(['nicho', 'alice', 'bob']);
+  const cmds: string[] = [];
+  const ptero = {
+    runCommand: async (cmd: string) => {
+      cmds.push(cmd);
+    },
+    power: async () => undefined,
+    captureTps: async () => null,
+  } as unknown as PteroClient;
+
+  const polls = new PollManager(cfg, db, ptero, roster);
+  const opened = polls.open('nicho', 'day');
+  assert.equal(opened.ok, true);
+  await new Promise((r) => setTimeout(r, 20));
+
+  const tellraws = cmds.filter((c) => c.startsWith('tellraw '));
+  const says = cmds.filter((c) => c.startsWith('say '));
+  assert.equal(tellraws.length, 1, `expected 1 tellraw, got: ${cmds.join(' | ')}`);
+  assert.equal(says.length, 0, `expected 0 say, got: ${cmds.join(' | ')}`);
+  db.raw.close();
+});
+
+test('vote() during an ongoing poll emits a tellraw and no say', async () => {
+  const cfg = makeCfg();
+  const db = makeDb();
+  const roster = new Roster();
+  roster.set(['nicho', 'alice', 'bob', 'carol']);
+  const cmds: string[] = [];
+  const ptero = {
+    runCommand: async (cmd: string) => {
+      cmds.push(cmd);
+    },
+    power: async () => undefined,
+    captureTps: async () => null,
+  } as unknown as PteroClient;
+
+  const polls = new PollManager(cfg, db, ptero, roster);
+  const opened = polls.open('nicho', 'day');
+  assert.equal(opened.ok, true);
+  if (!opened.ok) return;
+  await new Promise((r) => setTimeout(r, 20));
+
+  // Reset captures so we only look at the vote-cast effects.
+  cmds.length = 0;
+
+  const res = polls.vote(opened.result.poll.id, 'alice');
+  assert.equal(res.ok, true);
+  await new Promise((r) => setTimeout(r, 20));
+
+  const tellraws = cmds.filter((c) => c.startsWith('tellraw '));
+  const says = cmds.filter((c) => c.startsWith('say '));
+  assert.equal(tellraws.length, 1, `expected 1 tellraw, got: ${cmds.join(' | ')}`);
+  assert.equal(says.length, 0, `expected 0 say, got: ${cmds.join(' | ')}`);
+  db.raw.close();
+});
+
+test('a poll that passes emits a `say Vote passed:` (kept) and runs the action', async () => {
+  const cfg = makeCfg();
+  const db = makeDb();
+  const roster = new Roster();
+  roster.set(['nicho', 'alice']);
+  const cmds: string[] = [];
+  const ptero = {
+    runCommand: async (cmd: string) => {
+      cmds.push(cmd);
+    },
+    power: async () => undefined,
+    captureTps: async () => null,
+  } as unknown as PteroClient;
+
+  const polls = new PollManager(cfg, db, ptero, roster);
+  const opened = polls.open('nicho', 'day');
+  assert.equal(opened.ok, true);
+  if (!opened.ok) return;
+  await new Promise((r) => setTimeout(r, 20));
+
+  cmds.length = 0;
+  const res = polls.vote(opened.result.poll.id, 'alice');
+  assert.equal(res.ok, true);
+  if (!res.ok) return;
+  assert.equal(res.result.executed, true);
+  await new Promise((r) => setTimeout(r, 30));
+
+  const passedSay = cmds.find((c) => c.startsWith('say ') && c.includes('Vote passed:'));
+  assert.ok(passedSay, `expected pass-announcement say, got: ${cmds.join(' | ')}`);
+  db.raw.close();
+});
+
+test('castVote accepts mixed-case IGN when roster stores canonical case', () => {
+  const cfg = makeCfg();
+  const db = makeDb();
+  const roster = new Roster();
+  // Roster holds the player's actual Mojang-case IGN.
+  roster.set(['Raedbyr', 'alice']);
+  const polls = new PollManager(cfg, db, makePteroStub(), roster);
+
+  const opened = polls.open('alice', 'day');
+  assert.equal(opened.ok, true);
+  if (!opened.ok) return;
+  const shortId = opened.result.poll.short_id;
+
+  // Vote comes in as `Raedbyr` from the /me console line — must be accepted.
+  const res = polls.castVote(shortId, 'Raedbyr');
+  assert.equal(res.ok, true, `expected vote success, got ${JSON.stringify(res)}`);
+  db.raw.close();
+});
+
+test('vote() lowercases the ign before insert (DB stores canonical lowercase)', () => {
+  const cfg = makeCfg();
+  const db = makeDb();
+  const roster = new Roster();
+  // 4-player roster so a single extra vote doesn't pass the poll.
+  roster.set(['Raedbyr', 'alice', 'bob', 'carol']);
+  const polls = new PollManager(cfg, db, makePteroStub(), roster);
+
+  const opened = polls.open('alice', 'night');
+  assert.equal(opened.ok, true);
+  if (!opened.ok) return;
+  const pollId = opened.result.poll.id;
+
+  const res = polls.vote(pollId, 'RAEDBYR');
+  assert.equal(res.ok, true);
+
+  const voters = polls.publicPolls().find((p) => p.id === pollId)?.voters ?? [];
+  // Both initiator and the mixed-case voter normalize to lowercase.
+  assert.deepEqual(voters.sort(), ['alice', 'raedbyr']);
+  db.raw.close();
+});
+
+test('vote() refuses a second cast from the same player even with different case', () => {
+  const cfg = makeCfg();
+  const db = makeDb();
+  const roster = new Roster();
+  // 4-player roster so the first vote doesn't pass the poll.
+  roster.set(['Raedbyr', 'alice', 'bob', 'carol']);
+  const polls = new PollManager(cfg, db, makePteroStub(), roster);
+
+  const opened = polls.open('alice', 'day');
+  assert.equal(opened.ok, true);
+  if (!opened.ok) return;
+  const pollId = opened.result.poll.id;
+
+  const first = polls.vote(pollId, 'Raedbyr');
+  assert.equal(first.ok, true);
+  const second = polls.vote(pollId, 'raedbyr');
+  assert.equal(second.ok, false);
+  if (!second.ok) assert.equal(second.err.kind, 'already_voted');
+  db.raw.close();
+});
+
+test('abstain() accepts mixed-case IGN and stores the abstainer in lowercase', () => {
+  const cfg = makeCfg();
+  const db = makeDb();
+  const roster = new Roster();
+  roster.set(['Raedbyr', 'alice', 'bob']);
+  const polls = new PollManager(cfg, db, makePteroStub(), roster);
+
+  const opened = polls.open('alice', 'tps');
+  assert.equal(opened.ok, true);
+  if (!opened.ok) return;
+  const shortId = opened.result.poll.short_id;
+  const pollId = opened.result.poll.id;
+
+  const ab = polls.abstain(shortId, 'Raedbyr');
+  assert.equal(ab.ok, true);
+  assert.deepEqual(polls.abstainersFor(pollId), ['raedbyr']);
+
+  // Same player skipping again with any case = already_acted
+  const ab2 = polls.abstain(shortId, 'RAEDBYR');
+  assert.equal(ab2.ok, false);
+  if (!ab2.ok) assert.equal(ab2.err.kind, 'already_acted');
+  db.raw.close();
+});
+
 test('ptero failure log never echoes the bearer token', async () => {
   // Spy on console.error
   const captured: string[] = [];

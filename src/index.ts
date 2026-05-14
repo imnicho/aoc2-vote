@@ -1,6 +1,7 @@
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
+import { AfkTracker } from './afkTracker.js';
 import { loadConfig } from './config.js';
 import { DashboardCommandParser } from './dashboardCommandParser.js';
 import { openDb } from './db.js';
@@ -30,10 +31,12 @@ const sse = new SseBroadcaster(200, 4);
 const ops = new OperatorExec({ cfg, ptero, polls });
 const consumed = new ConsumedNonceStore();
 const welcome = new WelcomeFlow({ cfg, roster: ptero.roster, ptero });
+const afkTracker = new AfkTracker(ptero.roster);
 
 function snapshot(): StateSnapshot {
   return {
     online: ptero.roster.get(),
+    afk: ptero.roster.afkList(),
     polls: polls.publicPolls(),
     cooldowns: polls.cooldowns(),
     last_tps: polls.lastTpsValue(),
@@ -64,10 +67,15 @@ ptero.onTpsAuto((value) => {
 });
 polls.start(broadcast);
 welcome.start();
+afkTracker.start();
+// A roster-join is an unambiguous activity signal: clear any stale AFK flag
+// and seed the activity timestamp.
+ptero.roster.onPlayerJoin((ign) => afkTracker.recordActivity(ign));
 
 const voteParser = new VoteParser(polls);
 const dashboardParser = new DashboardCommandParser(ptero.roster, welcome);
 ptero.onConsole((line) => {
+  afkTracker.handleLine(line);
   voteParser.handleLine(line);
   dashboardParser.handleLine(line);
 });
@@ -121,6 +129,7 @@ function shutdown(signal: NodeJS.Signals): void {
   // eslint-disable-next-line no-console
   console.log(`received ${signal}, shutting down`);
   clearInterval(limiterSweep);
+  afkTracker.stop();
   welcome.stop();
   polls.stop();
   ptero.stop();

@@ -138,7 +138,7 @@ export class PollManager {
 
   publicPolls(): PublicPoll[] {
     const rows = this.db.listOpenPolls.all() as PollRow[];
-    const onlineSize = this.roster.size();
+    const active = this.roster.activeCount();
     return rows.map((row) => {
       const voters = (this.db.getVotes.all(row.id) as { ign: string }[]).map(
         (v) => v.ign,
@@ -151,7 +151,7 @@ export class PollManager {
         initiator: row.initiator_ign,
         voters,
         abstained,
-        needed: Math.max(1, onlineSize - abstained),
+        needed: Math.max(1, active - abstained),
         expires_at: row.expires_at,
         status: row.status,
       };
@@ -159,7 +159,8 @@ export class PollManager {
   }
 
   open(ign: string, action: Action): { ok: true; result: OpenPollResult } | { ok: false; err: OpenError } {
-    if (!this.roster.has(ign)) return { ok: false, err: { kind: 'ign_not_online' } };
+    const lower = ign.toLowerCase();
+    if (!this.roster.has(lower)) return { ok: false, err: { kind: 'ign_not_online' } };
 
     // cooldown check
     const cd = this.db.listCooldowns.all() as { action: string; until: number }[];
@@ -179,8 +180,8 @@ export class PollManager {
       this.db.expireStalePolls.run(createdAt, createdAt);
       const existing = this.db.getOpenPollByAction.get(action) as PollRow | undefined;
       if (existing) throw new PollAlreadyOpen();
-      this.db.insertPoll.run(id, shortId, action, ign, 'open', createdAt, expiresAt);
-      this.db.insertVote.run(id, ign, createdAt);
+      this.db.insertPoll.run(id, shortId, action, lower, 'open', createdAt, expiresAt);
+      this.db.insertVote.run(id, lower, createdAt);
     });
     try {
       txn();
@@ -193,18 +194,17 @@ export class PollManager {
 
     const row = this.db.getPoll.get(id) as PollRow;
 
-    const onlineSize = this.roster.size();
+    const activeSize = this.roster.activeCount();
     let executed = false;
-    if (onlineSize <= 1) {
-      // initiator alone — execute immediately
+    if (activeSize <= 1) {
+      // initiator alone (or everyone else is AFK) — execute immediately
       this.markPassed(row);
       this.executeAction(action).catch((err) => logPteroError('open executeAction', err));
       executed = true;
     } else {
-      // announce
-      const label = ACTION_LABELS[action];
-      const msg = `${ign} has voted to ${label}. Vote at https://nicho.wtf/aoc2/vote (1/${onlineSize})`;
-      this.ptero.runCommand(`say ${sanitizeSayText(msg)}`).catch((err) => logPteroError('open say', err));
+      // Announce via the pretty tellraw broadcast only. The legacy `say`
+      // duplicate is intentionally omitted — the tellraw re-fires on every
+      // state change and carries the same N/M counter.
       this.broadcastPollPrompts(row);
     }
 
@@ -213,7 +213,8 @@ export class PollManager {
   }
 
   vote(pollId: string, ign: string): { ok: true; result: VoteResult } | { ok: false; err: VoteError } {
-    if (!this.roster.has(ign)) return { ok: false, err: { kind: 'ign_not_online' } };
+    const lower = ign.toLowerCase();
+    if (!this.roster.has(lower)) return { ok: false, err: { kind: 'ign_not_online' } };
 
     const row = this.db.getPoll.get(pollId) as PollRow | undefined;
     if (!row) return { ok: false, err: { kind: 'poll_not_found' } };
@@ -229,9 +230,9 @@ export class PollManager {
     }
 
     const txn = this.db.raw.transaction(() => {
-      const already = this.db.hasVoted.get(row.id, ign) as { 1: number } | undefined;
+      const already = this.db.hasVoted.get(row.id, lower) as { 1: number } | undefined;
       if (already) throw new AlreadyVoted();
-      this.db.insertVote.run(row.id, ign, Date.now());
+      this.db.insertVote.run(row.id, lower, Date.now());
     });
     try {
       txn();
@@ -243,10 +244,10 @@ export class PollManager {
     }
 
     const voters = (this.db.getVotes.all(row.id) as { ign: string }[]).map((v) => v.ign);
-    const online = new Set(this.roster.get().map((p) => p.toLowerCase()));
-    const onlineVoters = voters.filter((v) => online.has(v.toLowerCase())).length;
-    const abstainerCount = this.onlineAbstainersFor(row.id, online);
-    const needed = Math.max(1, online.size - abstainerCount);
+    const active = this.activeOnlineSet();
+    const onlineVoters = voters.filter((v) => active.has(v.toLowerCase())).length;
+    const abstainerCount = this.onlineAbstainersFor(row.id, active);
+    const needed = Math.max(1, active.size - abstainerCount);
 
     let executed = false;
     if (onlineVoters >= needed) {
@@ -254,9 +255,8 @@ export class PollManager {
       this.executeAction(row.action as Action).catch((err) => logPteroError('vote executeAction', err));
       executed = true;
     } else {
-      const label = ACTION_LABELS[row.action as Action];
-      const msg = `${ign} has voted to ${label}. Vote at https://nicho.wtf/aoc2/vote (${onlineVoters}/${needed})`;
-      this.ptero.runCommand(`say ${sanitizeSayText(msg)}`).catch((err) => logPteroError('vote say', err));
+      // No `say` here — the tellraw broadcast carries the updated vote count
+      // and is the single source of in-chat truth for ongoing polls.
       this.broadcastPollPrompts(row);
     }
 
@@ -268,7 +268,7 @@ export class PollManager {
     const now = Date.now();
     const rows = this.db.listOpenPolls.all() as PollRow[];
     let changed = false;
-    const online = new Set(this.roster.get().map((p) => p.toLowerCase()));
+    const active = this.activeOnlineSet();
     for (const row of rows) {
       if (row.expires_at <= now) {
         this.db.setPollStatus.run('expired', now, row.id);
@@ -278,10 +278,10 @@ export class PollManager {
         continue;
       }
       const voters = (this.db.getVotes.all(row.id) as { ign: string }[]).map((v) => v.ign);
-      const onlineVoters = voters.filter((v) => online.has(v.toLowerCase())).length;
-      if (online.size === 0) continue;
-      const abstainerCount = this.onlineAbstainersFor(row.id, online);
-      const needed = Math.max(1, online.size - abstainerCount);
+      const onlineVoters = voters.filter((v) => active.has(v.toLowerCase())).length;
+      if (active.size === 0) continue;
+      const abstainerCount = this.onlineAbstainersFor(row.id, active);
+      const needed = Math.max(1, active.size - abstainerCount);
       if (onlineVoters >= needed) {
         this.markPassed(row);
         this.executeAction(row.action as Action).catch((err) => logPteroError('reevaluate executeAction', err));
@@ -289,6 +289,20 @@ export class PollManager {
       }
     }
     if (changed) this.onChange();
+  }
+
+  /**
+   * Build the lowercase set of online players who are NOT currently AFK.
+   * Used as the live denominator for vote-counting.
+   */
+  private activeOnlineSet(): Set<string> {
+    const afk = new Set(this.roster.afkList());
+    const out = new Set<string>();
+    for (const p of this.roster.get()) {
+      const key = p.toLowerCase();
+      if (!afk.has(key)) out.add(key);
+    }
+    return out;
   }
 
   private sweep(): void {
@@ -353,7 +367,7 @@ export class PollManager {
     if (!IGN_RE.test(ign)) return { ok: false, err: { kind: 'ign_not_online' } };
     const row = this.db.getOpenPollByShortId.get(shortId) as PollRow | undefined;
     if (!row) return { ok: false, err: { kind: 'poll_not_found' } };
-    return this.vote(row.id, ign);
+    return this.vote(row.id, ign.toLowerCase());
   }
 
   /**
@@ -363,7 +377,8 @@ export class PollManager {
    */
   abstain(shortId: string, ign: string): { ok: true; result: AbstainResult } | { ok: false; err: AbstainError } {
     if (!IGN_RE.test(ign)) return { ok: false, err: { kind: 'ign_not_online' } };
-    if (!this.roster.has(ign)) return { ok: false, err: { kind: 'ign_not_online' } };
+    const lower = ign.toLowerCase();
+    if (!this.roster.has(lower)) return { ok: false, err: { kind: 'ign_not_online' } };
 
     const row = this.db.getOpenPollByShortId.get(shortId) as PollRow | undefined;
     if (!row) return { ok: false, err: { kind: 'poll_not_found' } };
@@ -377,7 +392,7 @@ export class PollManager {
     }
 
     // Already voted? Treat as already_acted — a player can't both vote and skip.
-    const already = this.db.hasVoted.get(row.id, ign) as { 1: number } | undefined;
+    const already = this.db.hasVoted.get(row.id, lower) as { 1: number } | undefined;
     if (already) return { ok: false, err: { kind: 'already_acted' } };
 
     let set = this.abstainers.get(row.id);
@@ -385,19 +400,16 @@ export class PollManager {
       set = new Set<string>();
       this.abstainers.set(row.id, set);
     }
-    const lower = ign.toLowerCase();
-    for (const existing of set) {
-      if (existing.toLowerCase() === lower) {
-        return { ok: false, err: { kind: 'already_acted' } };
-      }
+    if (set.has(lower)) {
+      return { ok: false, err: { kind: 'already_acted' } };
     }
-    set.add(ign);
+    set.add(lower);
 
     const voters = (this.db.getVotes.all(row.id) as { ign: string }[]).map((v) => v.ign);
-    const online = new Set(this.roster.get().map((p) => p.toLowerCase()));
-    const onlineVoters = voters.filter((v) => online.has(v.toLowerCase())).length;
-    const abstainerCount = this.onlineAbstainersFor(row.id, online);
-    const needed = Math.max(1, online.size - abstainerCount);
+    const active = this.activeOnlineSet();
+    const onlineVoters = voters.filter((v) => active.has(v.toLowerCase())).length;
+    const abstainerCount = this.onlineAbstainersFor(row.id, active);
+    const needed = Math.max(1, active.size - abstainerCount);
 
     let executed = false;
     if (onlineVoters >= needed && onlineVoters >= 1) {
@@ -420,7 +432,7 @@ export class PollManager {
     if (!set) return 0;
     let n = 0;
     for (const ign of set) {
-      if (online.has(ign.toLowerCase())) n += 1;
+      if (online.has(ign)) n += 1;
     }
     return n;
   }
@@ -455,17 +467,17 @@ export class PollManager {
   private broadcastPollPrompts(row: PollRow): void {
     const voters = (this.db.getVotes.all(row.id) as { ign: string }[]).map((v) => v.ign);
     const abstained = this.abstainersFor(row.id);
-    const online = new Set(this.roster.get().map((p) => p.toLowerCase()));
-    const onlineVoters = voters.filter((v) => online.has(v.toLowerCase())).length;
-    const abstainerCount = this.onlineAbstainersFor(row.id, online);
-    const needed = Math.max(1, online.size - abstainerCount);
+    const active = this.activeOnlineSet();
+    const onlineVoters = voters.filter((v) => active.has(v.toLowerCase())).length;
+    const abstainerCount = this.onlineAbstainersFor(row.id, active);
+    const needed = Math.max(1, active.size - abstainerCount);
     const cmd = buildVotePromptCommand({
       shortId: row.short_id,
       initiator: row.initiator_ign,
       actionLabel: ACTION_LABELS[row.action as Action],
       voted: voters,
       abstained,
-      rosterSize: online.size,
+      rosterSize: active.size,
       votes: onlineVoters,
       needed,
     });

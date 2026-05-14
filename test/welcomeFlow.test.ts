@@ -110,6 +110,36 @@ test('welcome is skipped when SESSION_SECRET is null', async () => {
   welcome.stop();
 });
 
+test('dispatch dedupes back-to-back calls within the dedupe window', async () => {
+  const cfg = makeCfg();
+  const roster = new Roster();
+  const { client, cmds } = makePtero();
+  const welcome = new WelcomeFlow({ cfg, roster, ptero: client });
+  welcome.start();
+
+  await welcome.dispatch('nicho');
+  await welcome.dispatch('nicho');
+  await welcome.dispatch('NICHO');
+
+  assert.equal(cmds.length, 1, `expected 1 tellraw, got ${cmds.length}`);
+  welcome.stop();
+});
+
+test('dispatch dedupe is per-IGN — different players each get their own welcome', async () => {
+  const cfg = makeCfg();
+  const roster = new Roster();
+  const { client, cmds } = makePtero();
+  const welcome = new WelcomeFlow({ cfg, roster, ptero: client });
+  welcome.start();
+
+  await welcome.dispatch('nicho');
+  await welcome.dispatch('alice');
+  await welcome.dispatch('bob');
+
+  assert.equal(cmds.length, 3);
+  welcome.stop();
+});
+
 test('buildWelcomeComponents produces a click_event open_url with the supplied URL', () => {
   const cmps = buildWelcomeComponents('nicho', 'http://example/path?t=XYZ');
   // Find the clickable component.
@@ -119,4 +149,21 @@ test('buildWelcomeComponents produces a click_event open_url with the supplied U
   assert.ok(clickable);
   assert.equal(clickable!.clickEvent.action, 'open_url');
   assert.equal(clickable!.clickEvent.value, 'http://example/path?t=XYZ');
+});
+
+test('buildWelcomeComponents: no component is bold (every entry sets bold:false)', () => {
+  const cmps = buildWelcomeComponents('nicho', 'http://example/path?t=XYZ');
+  for (const c of cmps) {
+    assert.ok(typeof c === 'object' && c !== null);
+    const o = c as { bold?: unknown };
+    assert.notEqual(o.bold, true);
+    assert.equal(o.bold, false);
+  }
+});
+
+test('buildWelcomeComponents: link text has no inner spaces inside brackets', () => {
+  const cmps = buildWelcomeComponents('nicho', 'http://x') as Array<Record<string, unknown>>;
+  const link = cmps.find((c) => typeof c.text === 'string' && (c.text as string).includes('open dashboard'));
+  assert.ok(link);
+  assert.equal(link!.text, '[open dashboard ↗]');
 });

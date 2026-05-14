@@ -39,6 +39,9 @@ export class DashboardCommandParser {
     if (!m) return { kind: 'none' };
     const ign = m[1] ?? m[2] ?? '';
     if (!IGN_RE.test(ign)) return { kind: 'none' };
+    // roster.has and the rate-limit map both normalize case internally,
+    // but pass the original-case ign to dispatch so the tellraw selector
+    // (`@a[name=<ign>]`) targets the correct Minecraft player profile.
     if (!this.roster.has(ign)) return { kind: 'none' };
     if (!this.allow(ign)) return { kind: 'dashboard', ign, rateLimited: true };
     this.welcome.dispatch(ign).catch(() => undefined);

@@ -43,6 +43,18 @@ test('Roster.set emits change only on a different sorted set', () => {
   assert.equal(r.has('charlie'), false);
 });
 
+test('Roster.has handles mixed-case input against canonical-case storage', () => {
+  const r = new Roster();
+  r.addPlayer('Raedbyr');
+  assert.equal(r.has('Raedbyr'), true);
+  assert.equal(r.has('raedbyr'), true);
+  assert.equal(r.has('RAEDBYR'), true);
+  // lower-case stored, mixed-case query still matches
+  const r2 = new Roster();
+  r2.addPlayer('cdm144');
+  assert.equal(r2.has('CDM144'), true);
+});
+
 test('Roster.size reflects the current roster', () => {
   const r = new Roster();
   assert.equal(r.size(), 0);
@@ -64,6 +76,44 @@ test('parseJoinLine matches "X joined the game" with log prefixes', () => {
 test('parseLeaveLine matches "X left the game"', () => {
   assert.equal(parseLeaveLine('[12:34:56 INFO]: nicho left the game'), 'nicho');
   assert.equal(parseLeaveLine('nicho joined the game'), null);
+});
+
+test('Roster.markAfk / markActive / activeCount', () => {
+  const r = new Roster();
+  r.set(['nicho', 'alice', 'bob']);
+  assert.equal(r.activeCount(), 3);
+
+  assert.equal(r.markAfk('alice'), true);
+  assert.equal(r.isAfk('alice'), true);
+  assert.equal(r.activeCount(), 2);
+  // case-insensitive
+  assert.equal(r.isAfk('ALICE'), true);
+
+  // double-mark is a no-op
+  assert.equal(r.markAfk('alice'), false);
+
+  // mark active
+  assert.equal(r.markActive('Alice'), true);
+  assert.equal(r.isAfk('alice'), false);
+  assert.equal(r.activeCount(), 3);
+});
+
+test('Roster.set prunes AFK entries for departed players', () => {
+  const r = new Roster();
+  r.set(['nicho', 'alice', 'bob']);
+  r.markAfk('alice');
+  r.markAfk('bob');
+  assert.deepEqual(r.afkList().sort(), ['alice', 'bob']);
+  // alice leaves
+  r.set(['nicho', 'bob']);
+  assert.deepEqual(r.afkList(), ['bob']);
+});
+
+test('Roster.markAfk refuses an IGN not in the roster', () => {
+  const r = new Roster();
+  r.set(['nicho']);
+  assert.equal(r.markAfk('eve'), false);
+  assert.equal(r.isAfk('eve'), false);
 });
 
 test('Roster.addPlayer / removePlayer fire join/leave listeners', () => {

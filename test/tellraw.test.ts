@@ -171,6 +171,20 @@ test('generateShortId: returns 6-char Crockford base32', () => {
   }
 });
 
+test('buildVotePromptComponents: no component is bold (colors only)', () => {
+  const parts = buildVotePromptComponents({
+    shortId: 'ABCDEF',
+    initiator: 'nicho',
+    actionLabel: 'clear the weather',
+    votes: 1,
+    needed: 3,
+  }) as Array<Record<string, unknown>>;
+  for (const p of parts) {
+    assert.notEqual(p.bold, true);
+    assert.equal(p.bold, false);
+  }
+});
+
 test('IGN_RE: accepts valid, rejects punctuation and short names', () => {
   assert.match('nicho', IGN_RE);
   assert.match('Player_99', IGN_RE);
