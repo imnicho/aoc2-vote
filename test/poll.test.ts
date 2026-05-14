@@ -273,8 +273,8 @@ test('open() with 3 online players broadcasts a tellraw vote prompt', async () =
   assert.match(tellraw!, /^tellraw @a\[name=!nicho\] /);
   // Payload references the action label and the YES/SKIP click commands.
   assert.match(tellraw!, /clear the weather/);
-  assert.match(tellraw!, /\/me votes yes [0-9A-HJKMNP-TV-Z]{6}/);
-  assert.match(tellraw!, /\/me skips [0-9A-HJKMNP-TV-Z]{6}/);
+  assert.match(tellraw!, /\/vote yes [0-9A-HJKMNP-TV-Z]{6}/);
+  assert.match(tellraw!, /\/vote skip [0-9A-HJKMNP-TV-Z]{6}/);
   db.raw.close();
 });
 

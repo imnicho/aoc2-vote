@@ -120,7 +120,7 @@ test('buildVotePromptCommand: rejects short ids outside Crockford base32 (I/L/O/
   );
 });
 
-test('buildVotePromptComponents: click commands carry /me votes yes <shortId> and /me skips <shortId>', () => {
+test('buildVotePromptComponents: click commands carry /vote yes <shortId> and /vote skip <shortId>', () => {
   const parts = buildVotePromptComponents({
     shortId: 'ABCDEF',
     initiator: 'nicho',
@@ -140,9 +140,9 @@ test('buildVotePromptComponents: click commands carry /me votes yes <shortId> an
   assert.ok(skip, 'SKIP component present');
   if (!yes || !skip) return;
   assert.equal(yes.clickEvent.action, 'run_command');
-  assert.equal(yes.clickEvent.value, '/me votes yes ABCDEF');
+  assert.equal(yes.clickEvent.value, '/vote yes ABCDEF');
   assert.equal(skip.clickEvent.action, 'run_command');
-  assert.equal(skip.clickEvent.value, '/me skips ABCDEF');
+  assert.equal(skip.clickEvent.value, '/vote skip ABCDEF');
 });
 
 test('buildVotePromptCommand: tellraw payload uses @a-only selector even with many exclusions', () => {

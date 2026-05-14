@@ -7,7 +7,9 @@ import { stripConsoleNoise } from './voteParser.js';
 import type { Roster } from './roster.js';
 import type { WelcomeFlow } from './welcomeFlow.js';
 
-const DASHBOARD_RE = /^\* (\w{3,16}) dashboards?\s*$/;
+// v0.2+ mod logger line: `[aoc2-dashboard] nicho requested dashboard`
+// v0.1 emote fallback: `* nicho dashboard`
+const DASHBOARD_RE = /^(?:\[aoc2-dashboard\] (\w{3,16}) requested dashboard|\* (\w{3,16}) dashboards?)\s*$/;
 const IGN_RE = /^[A-Za-z0-9_]{3,16}$/;
 const PER_IGN_LIMIT = 3;
 const WINDOW_MS = 60_000;

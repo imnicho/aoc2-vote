@@ -44,8 +44,8 @@ export class VoteParser {
 
     const yes = YES_RE.exec(stripped);
     if (yes) {
-      const ign = yes[1]!;
-      const shortId = yes[2]!;
+      const ign = (yes[1] ?? yes[3])!;
+      const shortId = (yes[2] ?? yes[4])!;
       if (!IGN_RE.test(ign)) return { kind: 'none' };
       if (!this.allow(ign)) return { kind: 'yes', ign, shortId, rateLimited: true };
       this.polls.castVote(shortId, ign);
@@ -54,8 +54,8 @@ export class VoteParser {
 
     const skip = SKIP_RE.exec(stripped);
     if (skip) {
-      const ign = skip[1]!;
-      const shortId = skip[2]!;
+      const ign = (skip[1] ?? skip[3])!;
+      const shortId = (skip[2] ?? skip[4])!;
       if (!IGN_RE.test(ign)) return { kind: 'none' };
       if (!this.allow(ign)) return { kind: 'skip', ign, shortId, rateLimited: true };
       this.polls.abstain(shortId, ign);

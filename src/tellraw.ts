@@ -92,7 +92,7 @@ export function buildVotePromptComponents(
       text: 'YES',
       color: 'green',
       bold: true,
-      clickEvent: { action: 'run_command', value: `/me votes yes ${shortId}` },
+      clickEvent: { action: 'run_command', value: `/vote yes ${shortId}` },
       hoverEvent: { action: 'show_text', contents: 'cast your vote' },
     },
     { text: ' ]   [ ', color: 'gray' },
@@ -100,7 +100,7 @@ export function buildVotePromptComponents(
       text: 'SKIP',
       color: 'red',
       bold: true,
-      clickEvent: { action: 'run_command', value: `/me skips ${shortId}` },
+      clickEvent: { action: 'run_command', value: `/vote skip ${shortId}` },
       hoverEvent: {
         action: 'show_text',
         contents: 'abstain — remove yourself from this poll',
