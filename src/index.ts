@@ -49,6 +49,12 @@ function broadcast(): void {
 }
 
 ptero.start();
+// Pause expensive polling when no one is watching the dashboard.
+sse.onActivityChange((active) => {
+  // eslint-disable-next-line no-console
+  console.info(`[ptero] poll ${active ? 'resumed' : 'paused'} (subscribers=${sse.size()})`);
+  ptero.setActive(active);
+});
 ptero.roster.onChange(broadcast);
 ptero.onStatus(broadcast);
 ptero.onResources(broadcast);

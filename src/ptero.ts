@@ -70,23 +70,47 @@ export class PteroClient {
       return;
     }
     this.connect().catch(() => this.scheduleReconnect());
-    this.listPollTimer = setInterval(() => {
-      this.requestList();
-    }, this.cfg.ROSTER_REFRESH_MS);
-    this.statusTimer = setInterval(() => {
-      this.pollStatus().catch(() => undefined);
-    }, this.cfg.ROSTER_REFRESH_MS);
+    // Always do one initial roster + status fetch so the SSE state is populated
+    // for the first viewer. Periodic polling is gated by `setActive(true)`.
     this.pollStatus().catch(() => undefined);
-    // Auto-refresh TPS every 60s so the panel always has a recent value.
-    this.tpsAutoTimer = setInterval(() => {
-      this.captureTps(8000).then((value) => {
-        if (value !== null) {
-          this.onTpsAutoRefresh.forEach((fn) => {
-            try { fn(value); } catch { /* ignore */ }
-          });
-        }
-      }).catch(() => undefined);
-    }, 60_000);
+  }
+
+  /**
+   * Pause/resume the expensive periodic polling (roster list + spark tps +
+   * Pterodactyl /resources). Called from index.ts when SSE subscriber count
+   * transitions 0↔N — no point hammering the panel when nobody's watching.
+   */
+  setActive(active: boolean): void {
+    if (this.cfg.PTERO_DRY_RUN) return;
+    if (active) {
+      if (!this.listPollTimer) {
+        this.requestList();
+        this.listPollTimer = setInterval(() => {
+          this.requestList();
+        }, this.cfg.ROSTER_REFRESH_MS);
+      }
+      if (!this.statusTimer) {
+        this.pollStatus().catch(() => undefined);
+        this.statusTimer = setInterval(() => {
+          this.pollStatus().catch(() => undefined);
+        }, this.cfg.ROSTER_REFRESH_MS);
+      }
+      if (!this.tpsAutoTimer) {
+        this.tpsAutoTimer = setInterval(() => {
+          this.captureTps(8000).then((value) => {
+            if (value !== null) {
+              this.onTpsAutoRefresh.forEach((fn) => {
+                try { fn(value); } catch { /* ignore */ }
+              });
+            }
+          }).catch(() => undefined);
+        }, 60_000);
+      }
+    } else {
+      if (this.listPollTimer) { clearInterval(this.listPollTimer); this.listPollTimer = null; }
+      if (this.statusTimer)   { clearInterval(this.statusTimer);   this.statusTimer = null; }
+      if (this.tpsAutoTimer)  { clearInterval(this.tpsAutoTimer);  this.tpsAutoTimer = null; }
+    }
   }
 
   private onTpsAutoRefresh = new Set<(v: string) => void>();

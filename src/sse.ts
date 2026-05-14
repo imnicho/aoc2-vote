@@ -96,7 +96,31 @@ export class SseBroadcaster {
 
   subscribe(fn: Subscriber): { ok: true; unsubscribe: () => void } | { ok: false } {
     if (this.subs.size >= this.maxClients) return { ok: false };
+    const wasZero = this.subs.size === 0;
     this.subs.add(fn);
-    return { ok: true, unsubscribe: () => this.subs.delete(fn) };
+    if (wasZero) this.notifyActivity(true);
+    return {
+      ok: true,
+      unsubscribe: () => {
+        const had = this.subs.delete(fn);
+        if (had && this.subs.size === 0) this.notifyActivity(false);
+      },
+    };
+  }
+
+  /**
+   * Notify listeners when the dashboard goes from idle → watched or
+   * watched → idle. Backend can use this to pause expensive polling when
+   * nobody has the page open.
+   */
+  private activityListeners = new Set<(active: boolean) => void>();
+  onActivityChange(fn: (active: boolean) => void): () => void {
+    this.activityListeners.add(fn);
+    return () => this.activityListeners.delete(fn);
+  }
+  private notifyActivity(active: boolean): void {
+    for (const fn of this.activityListeners) {
+      try { fn(active); } catch { /* ignore */ }
+    }
   }
 }
