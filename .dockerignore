@@ -1,0 +1,14 @@
+node_modules
+dist
+dist-test
+.git
+.gitignore
+*.log
+.env
+.env.*
+data
+*.db
+*.db-journal
+.DS_Store
+README.md
+test
