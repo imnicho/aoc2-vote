@@ -268,18 +268,19 @@ test('open() with 3 online players broadcasts a tellraw vote prompt', async () =
   await new Promise((r) => setTimeout(r, 20));
 
   const tellraws = cmds.filter((c) => c.startsWith('tellraw '));
-  // Two tellraws expected: (1) initiator ack to the opener, (2) non-voter prompt.
+  // Two tellraws expected: progress to acted (initiator) + prompt to non-voters.
   assert.equal(tellraws.length, 2, `expected 2 tellraws, got: ${cmds.join(' | ')}`);
-  const ack = tellraws.find((t) => t.startsWith('tellraw @a[name=nicho]'));
-  const broadcast = tellraws.find((t) => t.startsWith('tellraw @a[name=!nicho]'));
-  assert.ok(ack, 'expected initiator ack');
-  assert.ok(broadcast, 'expected non-voter broadcast');
-  // The broadcast carries the click buttons + action label.
-  assert.match(broadcast!, /clear the weather/);
-  assert.match(broadcast!, /\/vote yes [0-9A-HJKMNP-TV-Z]{6}/);
-  assert.match(broadcast!, /\/vote skip [0-9A-HJKMNP-TV-Z]{6}/);
-  // The initiator ack confirms the action.
-  assert.match(ack!, /You started a vote/);
+  const progress = tellraws.find((t) => t.startsWith('tellraw @a[name=nicho]'));
+  const prompt = tellraws.find((t) => t.startsWith('tellraw @a[name=!nicho]'));
+  assert.ok(progress, 'expected acted-progress tellraw');
+  assert.ok(prompt, 'expected non-voter prompt');
+  // The prompt carries the click buttons + action label.
+  assert.match(prompt!, /clear the weather/);
+  assert.match(prompt!, /\/vote yes [0-9A-HJKMNP-TV-Z]{6}/);
+  assert.match(prompt!, /\/vote skip [0-9A-HJKMNP-TV-Z]{6}/);
+  // The progress line shows the count + waiting-on-N.
+  assert.match(progress!, /1\/3/);
+  assert.match(progress!, /waiting on/);
   db.raw.close();
 });
 
@@ -399,7 +400,10 @@ test('vote() during an ongoing poll emits a tellraw and no say', async () => {
 
   const tellraws = cmds.filter((c) => c.startsWith('tellraw '));
   const says = cmds.filter((c) => c.startsWith('say '));
-  assert.equal(tellraws.length, 1, `expected 1 tellraw, got: ${cmds.join(' | ')}`);
+  // After a vote: progress to acted (initiator + alice) + prompt to non-voters.
+  assert.equal(tellraws.length, 2, `expected 2 tellraws, got: ${cmds.join(' | ')}`);
+  assert.ok(tellraws.some((t) => /^tellraw @a\[(name=nicho|name=alice)(,name=(nicho|alice))?\]/.test(t)), 'acted-progress present');
+  assert.ok(tellraws.some((t) => /^tellraw @a\[name=!nicho,name=!alice\]/.test(t)), 'non-voter prompt present');
   assert.equal(says.length, 0, `expected 0 say, got: ${cmds.join(' | ')}`);
   db.raw.close();
 });
@@ -463,12 +467,16 @@ test('broadcast selector uses canonical Mojang case for mixed-case voters', asyn
   await new Promise((r) => setTimeout(r, 20));
 
   const tellraws = cmds.filter((c) => c.startsWith('tellraw '));
-  const latest = tellraws[tellraws.length - 1]!;
+  // After castVote both open() and castVote() emit prompts. We want the
+  // most recent prompt — it should reflect the new vote count + exclusions.
+  const prompts = tellraws.filter((t) => /^tellraw @a\[name=!/.test(t));
+  const prompt = prompts[prompts.length - 1];
+  assert.ok(prompt, 'non-voter prompt present');
   // The selector must exclude the actual player profile names. Lowercased
   // exclusions would silently miss and Raedbyr would keep seeing buttons.
-  assert.match(latest, /name=!alice/);
-  assert.match(latest, /name=!Raedbyr/);
-  assert.doesNotMatch(latest, /name=!raedbyr/);
+  assert.match(prompt!, /name=!alice/);
+  assert.match(prompt!, /name=!Raedbyr/);
+  assert.doesNotMatch(prompt!, /name=!raedbyr/);
   db.raw.close();
 });
 

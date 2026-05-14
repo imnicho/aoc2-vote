@@ -208,12 +208,12 @@ export class PollManager {
       this.executeAction(action).catch((err) => logPteroError('open executeAction', err));
       executed = true;
     } else {
-      // Confirm to the initiator that their vote started — broadcastPollPrompts
-      // excludes them because they auto-voted, so without this they get zero
-      // chat signal that anything happened.
-      this.sendInitiatorAck(row);
-      // Announce via the pretty tellraw broadcast to remaining non-voters.
+      // Two parallel tellraws on every state change:
+      //   - non-voters get the actionable [YES]/[SKIP] prompt
+      //   - acted players (voters + abstainers) get a read-only progress line
+      // so the whole table sees the count tick up each time someone clicks.
       this.broadcastPollPrompts(row);
+      this.broadcastPollProgress(row);
     }
 
     this.onChange();
@@ -263,9 +263,10 @@ export class PollManager {
       this.executeAction(row.action as Action).catch((err) => logPteroError('vote executeAction', err));
       executed = true;
     } else {
-      // No `say` here — the tellraw broadcast carries the updated vote count
-      // and is the single source of in-chat truth for ongoing polls.
+      // Non-voters get the actionable prompt; acted players see a progress
+      // line so everyone watches the count tick up.
       this.broadcastPollPrompts(row);
+      this.broadcastPollProgress(row);
     }
 
     this.onChange();
@@ -452,6 +453,7 @@ export class PollManager {
       executed = true;
     } else {
       this.broadcastPollPrompts(row);
+      this.broadcastPollProgress(row);
     }
 
     this.onChange();
@@ -493,29 +495,41 @@ export class PollManager {
   }
 
   /**
-   * Tellraw the poll initiator a one-shot confirmation that their vote opened.
-   * Tells them the action, the current count, and the short id so they can
-   * reference it. Goes only to that player.
+   * Read-only progress tellraw fired to every player who's already acted
+   * (voted or abstained) — initiator included. Carries the live count and
+   * how many remain. No click buttons.
+   *
+   * Fires alongside `broadcastPollPrompts` on every state change so the
+   * acted-set sees the count tick up as new votes arrive.
    */
-  private sendInitiatorAck(row: PollRow): void {
-    const canonical = this.canonicalIgn(row.initiator_ign.toLowerCase()) ?? row.initiator_ign;
+  private broadcastPollProgress(row: PollRow): void {
+    const voters = (this.db.getVotes.all(row.id) as { ign: string }[]).map((v) => v.ign);
+    const abstained = this.abstainersFor(row.id);
     const active = this.activeOnlineSet();
+    const onlineVoters = voters.filter((v) => active.has(v.toLowerCase())).length;
     const abstainerCount = this.onlineAbstainersFor(row.id, active);
     const needed = Math.max(1, active.size - abstainerCount);
+    const remaining = Math.max(0, needed - onlineVoters);
+
+    // Target the acted set in canonical case (Minecraft selectors are
+    // case-sensitive). If we can't resolve anyone, skip silently.
+    const acted = this.canonicalize([...voters, ...abstained]);
+    if (acted.length === 0) return;
+    const selector = `@a[${acted.map((n) => `name=${n}`).join(',')}]`;
+
     const label = ACTION_LABELS[row.action as Action];
-    if (!IGN_RE.test(canonical)) return;
     const components = [
       { text: '[VOTE] ', color: 'gold', bold: false },
-      { text: 'You started a vote to ', bold: false },
       { text: label, color: 'aqua', bold: false },
-      { text: `. Waiting on `, bold: false },
-      { text: `${needed - 1}`, color: 'yellow', bold: false },
-      { text: ` more ${needed - 1 === 1 ? 'player' : 'players'} (id `, bold: false },
-      { text: row.short_id, color: 'gray', bold: false },
-      { text: ').', bold: false },
+      { text: ` — `, bold: false },
+      { text: `${onlineVoters}/${needed}`, color: 'yellow', bold: false },
+      { text: ` voted`, bold: false },
+      remaining > 0
+        ? { text: `, waiting on ${remaining} more`, color: 'gray', bold: false }
+        : { text: ` — passing now`, color: 'green', bold: false },
     ];
-    const cmd = `tellraw @a[name=${canonical}] ${JSON.stringify(components)}`;
-    this.ptero.runCommand(cmd).catch((err) => logPteroError('initiator ack tellraw', err));
+    const cmd = `tellraw ${selector} ${JSON.stringify(components)}`;
+    this.ptero.runCommand(cmd).catch((err) => logPteroError('broadcast progress', err));
   }
 
   /**
