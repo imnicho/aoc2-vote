@@ -75,8 +75,8 @@ from the Minecraft server itself:
 If a player misses the chat link they can type `/dashboard` in chat at any
 time and the service replies with a fresh mint-token link (rate-limited to
 3/min/IGN). The `/dashboard` command is provided by the small server-side
-`aoc2-dashboard` NeoForge mod, which runs `/me dashboard` under the hood —
-the legacy `/me dashboard` emote still works as a fallback.
+`aoc2-dashboard` NeoForge mod, which runs `/dashboard` under the hood —
+the legacy `/dashboard` emote still works as a fallback.
 
 Operators are site-only (not Minecraft `/op`s). When an IGN appears in
 `OPERATOR_IGNS`, its session carries `is_operator:true` and the frontend

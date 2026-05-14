@@ -1,6 +1,6 @@
 /**
- * Listens to Pterodactyl console output for the `/me dashboard` (or
- * `/me dashboards`) emote and replies with a fresh welcome tellraw to the
+ * Listens to Pterodactyl console output for the `/dashboard` command (logger line; or the legacy
+ * `/me dashboards?` emote) and replies with a fresh welcome tellraw to the
  * requesting player.
  */
 import { stripConsoleNoise } from './voteParser.js';
@@ -35,7 +35,7 @@ export class DashboardCommandParser {
     const stripped = stripConsoleNoise(raw);
     const m = DASHBOARD_RE.exec(stripped);
     if (!m) return { kind: 'none' };
-    const ign = m[1] ?? '';
+    const ign = m[1] ?? m[2] ?? '';
     if (!IGN_RE.test(ign)) return { kind: 'none' };
     if (!this.roster.has(ign)) return { kind: 'none' };
     if (!this.allow(ign)) return { kind: 'dashboard', ign, rateLimited: true };
