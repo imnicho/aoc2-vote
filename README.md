@@ -54,9 +54,9 @@ missing.
 | `PUBLIC_BASE_URL`    | `https://nicho.wtf`    | base URL embedded in the welcome tellraw link |
 | `PTERO_DRY_RUN`      | `false`                | local-dev mode; see "Dry-run mode" below |
 | `PTERO_MOCK_ROSTER`  | `nicho` (in dry-run)   | comma-separated mock roster used when `PTERO_DRY_RUN=true` |
-| `SPAWN_X`            | `-1780`                | world-spawn X for `gather_at_spawn` |
-| `SPAWN_Y`            | `117`                  | world-spawn Y for `gather_at_spawn` |
-| `SPAWN_Z`            | `1187`                 | world-spawn Z for `gather_at_spawn` |
+| `SPAWN_X`            | `-1756`                | world-spawn X for `gather_at_spawn` |
+| `SPAWN_Y`            | `119`                  | world-spawn Y for `gather_at_spawn` |
+| `SPAWN_Z`            | `1201`                 | world-spawn Z for `gather_at_spawn` |
 
 ## Auth model
 
@@ -120,7 +120,7 @@ build can't be deployed against production CORS by accident.
 The `gather_at_spawn` action teleports every currently-online player (always
 `@a`, never any other selector) to the world spawn. The coordinates are read
 from the `SPAWN_X` / `SPAWN_Y` / `SPAWN_Z` env vars at boot (defaults
-`-1780 / 117 / 1187`). Change them in Coolify and redeploy to pick up a
+`-1756 / 119 / 1201`). Change them in Coolify and redeploy to pick up a
 new spawn.
 
 ## Behavior

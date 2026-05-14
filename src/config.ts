@@ -132,9 +132,9 @@ export function loadConfig(): Config {
     PTERO_DRY_RUN: dryRun,
     PTERO_MOCK_ROSTER: dryRun && mockRoster.length === 0 ? ['nicho'] : mockRoster,
     SPAWN_COORDS: {
-      x: intEnvSigned('SPAWN_X', -1780),
-      y: intEnvSigned('SPAWN_Y', 117),
-      z: intEnvSigned('SPAWN_Z', 1187),
+      x: intEnvSigned('SPAWN_X', -1756),
+      y: intEnvSigned('SPAWN_Y', 119),
+      z: intEnvSigned('SPAWN_Z', 1201),
     },
   };
 }
