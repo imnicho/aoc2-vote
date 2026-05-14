@@ -56,12 +56,19 @@ export class AfkTracker {
 
   constructor(roster: Roster, opts: AfkTrackerOptions = {}) {
     this.roster = roster;
-    this.idleMs = opts.idleMs ?? 5 * 60 * 1000;
+    // Default disabled (Number.POSITIVE_INFINITY). AoC2 has no AFK mod, so
+    // chat-silence ≠ AFK — players are routinely silent for hours during
+    // normal play. Marking them AFK collapses poll denominators and causes
+    // polls to instant-execute. Re-enable via env if a real AFK mod is added
+    // to the pack later.
+    this.idleMs = opts.idleMs ?? Number.POSITIVE_INFINITY;
     this.sweepMs = opts.sweepMs ?? 30_000;
   }
 
   start(): void {
     if (this.sweepTimer) return;
+    // Skip the sweep entirely when idle-timeout is disabled.
+    if (!Number.isFinite(this.idleMs)) return;
     this.sweepTimer = setInterval(() => this.sweep(), this.sweepMs);
     this.sweepTimer.unref?.();
   }
