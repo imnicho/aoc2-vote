@@ -16,8 +16,14 @@
 
 import type { PollManager } from './poll.js';
 
-const YES_RE = /^\* (\w{3,16}) votes yes ([0-9A-HJKMNP-TV-Z]{6})\s*$/;
-const SKIP_RE = /^\* (\w{3,16}) skips ([0-9A-HJKMNP-TV-Z]{6})\s*$/;
+// v0.3+ mod logger lines (primary — silent, no chat broadcast):
+//   "[aoc2-vote] <ign> votes yes <SHORTID>"
+//   "[aoc2-vote] <ign> skips <SHORTID>"
+// v0.1 emote fallback (`/me votes yes ...` — broadcasts to chat):
+//   "* <ign> votes yes <SHORTID>"
+//   "* <ign> skips <SHORTID>"
+const YES_RE = /^(?:\[aoc2-vote\] (\w{3,16}) votes yes ([0-9A-HJKMNP-TV-Z]{6})|\* (\w{3,16}) votes yes ([0-9A-HJKMNP-TV-Z]{6}))\s*$/;
+const SKIP_RE = /^(?:\[aoc2-vote\] (\w{3,16}) skips ([0-9A-HJKMNP-TV-Z]{6})|\* (\w{3,16}) skips ([0-9A-HJKMNP-TV-Z]{6}))\s*$/;
 const IGN_RE = /^[A-Za-z0-9_]{3,16}$/;
 
 const PER_IGN_LIMIT = 5;

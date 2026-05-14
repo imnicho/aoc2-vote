@@ -267,14 +267,19 @@ test('open() with 3 online players broadcasts a tellraw vote prompt', async () =
   // Allow floating promises to flush.
   await new Promise((r) => setTimeout(r, 20));
 
-  const tellraw = cmds.find((c) => c.startsWith('tellraw '));
-  assert.ok(tellraw, `expected a tellraw command, got: ${cmds.join(' | ')}`);
-  // Selector excludes the initiator since they auto-voted.
-  assert.match(tellraw!, /^tellraw @a\[name=!nicho\] /);
-  // Payload references the action label and the YES/SKIP click commands.
-  assert.match(tellraw!, /clear the weather/);
-  assert.match(tellraw!, /\/vote yes [0-9A-HJKMNP-TV-Z]{6}/);
-  assert.match(tellraw!, /\/vote skip [0-9A-HJKMNP-TV-Z]{6}/);
+  const tellraws = cmds.filter((c) => c.startsWith('tellraw '));
+  // Two tellraws expected: (1) initiator ack to the opener, (2) non-voter prompt.
+  assert.equal(tellraws.length, 2, `expected 2 tellraws, got: ${cmds.join(' | ')}`);
+  const ack = tellraws.find((t) => t.startsWith('tellraw @a[name=nicho]'));
+  const broadcast = tellraws.find((t) => t.startsWith('tellraw @a[name=!nicho]'));
+  assert.ok(ack, 'expected initiator ack');
+  assert.ok(broadcast, 'expected non-voter broadcast');
+  // The broadcast carries the click buttons + action label.
+  assert.match(broadcast!, /clear the weather/);
+  assert.match(broadcast!, /\/vote yes [0-9A-HJKMNP-TV-Z]{6}/);
+  assert.match(broadcast!, /\/vote skip [0-9A-HJKMNP-TV-Z]{6}/);
+  // The initiator ack confirms the action.
+  assert.match(ack!, /You started a vote/);
   db.raw.close();
 });
 
@@ -337,7 +342,7 @@ test('open() with only the initiator non-AFK executes immediately', () => {
   db.raw.close();
 });
 
-test('open() emits exactly one tellraw and zero say for the poll prompt', async () => {
+test('open() emits exactly two tellraws (initiator ack + non-voter prompt) and zero say', async () => {
   const cfg = makeCfg();
   const db = makeDb();
   const roster = new Roster();
@@ -358,7 +363,9 @@ test('open() emits exactly one tellraw and zero say for the poll prompt', async 
 
   const tellraws = cmds.filter((c) => c.startsWith('tellraw '));
   const says = cmds.filter((c) => c.startsWith('say '));
-  assert.equal(tellraws.length, 1, `expected 1 tellraw, got: ${cmds.join(' | ')}`);
+  assert.equal(tellraws.length, 2, `expected 2 tellraws, got: ${cmds.join(' | ')}`);
+  assert.ok(tellraws.some((t) => t.startsWith('tellraw @a[name=nicho]')), 'initiator ack present');
+  assert.ok(tellraws.some((t) => t.startsWith('tellraw @a[name=!nicho]')), 'non-voter broadcast present');
   assert.equal(says.length, 0, `expected 0 say, got: ${cmds.join(' | ')}`);
   db.raw.close();
 });

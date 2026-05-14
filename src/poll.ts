@@ -208,9 +208,11 @@ export class PollManager {
       this.executeAction(action).catch((err) => logPteroError('open executeAction', err));
       executed = true;
     } else {
-      // Announce via the pretty tellraw broadcast only. The legacy `say`
-      // duplicate is intentionally omitted — the tellraw re-fires on every
-      // state change and carries the same N/M counter.
+      // Confirm to the initiator that their vote started — broadcastPollPrompts
+      // excludes them because they auto-voted, so without this they get zero
+      // chat signal that anything happened.
+      this.sendInitiatorAck(row);
+      // Announce via the pretty tellraw broadcast to remaining non-voters.
       this.broadcastPollPrompts(row);
     }
 
@@ -488,6 +490,32 @@ export class PollManager {
     // suffixing wall-clock millis mod alphabet. Returned value is still
     // length 6 and within the Crockford alphabet.
     return generateShortId();
+  }
+
+  /**
+   * Tellraw the poll initiator a one-shot confirmation that their vote opened.
+   * Tells them the action, the current count, and the short id so they can
+   * reference it. Goes only to that player.
+   */
+  private sendInitiatorAck(row: PollRow): void {
+    const canonical = this.canonicalIgn(row.initiator_ign.toLowerCase()) ?? row.initiator_ign;
+    const active = this.activeOnlineSet();
+    const abstainerCount = this.onlineAbstainersFor(row.id, active);
+    const needed = Math.max(1, active.size - abstainerCount);
+    const label = ACTION_LABELS[row.action as Action];
+    if (!IGN_RE.test(canonical)) return;
+    const components = [
+      { text: '[VOTE] ', color: 'gold', bold: false },
+      { text: 'You started a vote to ', bold: false },
+      { text: label, color: 'aqua', bold: false },
+      { text: `. Waiting on `, bold: false },
+      { text: `${needed - 1}`, color: 'yellow', bold: false },
+      { text: ` more ${needed - 1 === 1 ? 'player' : 'players'} (id `, bold: false },
+      { text: row.short_id, color: 'gray', bold: false },
+      { text: ').', bold: false },
+    ];
+    const cmd = `tellraw @a[name=${canonical}] ${JSON.stringify(components)}`;
+    this.ptero.runCommand(cmd).catch((err) => logPteroError('initiator ack tellraw', err));
   }
 
   /**
