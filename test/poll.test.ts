@@ -400,9 +400,12 @@ test('vote() during an ongoing poll emits a tellraw and no say', async () => {
 
   const tellraws = cmds.filter((c) => c.startsWith('tellraw '));
   const says = cmds.filter((c) => c.startsWith('say '));
-  // After a vote: progress to acted (initiator + alice) + prompt to non-voters.
-  assert.equal(tellraws.length, 2, `expected 2 tellraws, got: ${cmds.join(' | ')}`);
-  assert.ok(tellraws.some((t) => /^tellraw @a\[(name=nicho|name=alice)(,name=(nicho|alice))?\]/.test(t)), 'acted-progress present');
+  // After a vote: one progress tellraw per acted player (nicho + alice) +
+  // one prompt to non-voters. Progress is fanned out one-per-player because
+  // `@a[name=X,name=Y]` ANDs positive name filters and matches nobody.
+  assert.equal(tellraws.length, 3, `expected 3 tellraws, got: ${cmds.join(' | ')}`);
+  assert.ok(tellraws.some((t) => t.startsWith('tellraw @a[name=nicho]')), 'progress to nicho present');
+  assert.ok(tellraws.some((t) => t.startsWith('tellraw @a[name=alice]')), 'progress to alice present');
   assert.ok(tellraws.some((t) => /^tellraw @a\[name=!nicho,name=!alice\]/.test(t)), 'non-voter prompt present');
   assert.equal(says.length, 0, `expected 0 say, got: ${cmds.join(' | ')}`);
   db.raw.close();

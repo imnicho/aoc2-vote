@@ -513,9 +513,12 @@ export class PollManager {
 
     // Target the acted set in canonical case (Minecraft selectors are
     // case-sensitive). If we can't resolve anyone, skip silently.
+    //
+    // One tellraw per player: `@a[name=X,name=Y]` ANDs the positive name
+    // filters (an entity can't have two names) and matches nobody, so we
+    // can't pack the acted-set into a single selector. Fan out instead.
     const acted = this.canonicalize([...voters, ...abstained]);
     if (acted.length === 0) return;
-    const selector = `@a[${acted.map((n) => `name=${n}`).join(',')}]`;
 
     const label = ACTION_LABELS[row.action as Action];
     const components = [
@@ -528,8 +531,11 @@ export class PollManager {
         ? { text: `, waiting on ${remaining} more`, color: 'gray', bold: false }
         : { text: ` — passing now`, color: 'green', bold: false },
     ];
-    const cmd = `tellraw ${selector} ${JSON.stringify(components)}`;
-    this.ptero.runCommand(cmd).catch((err) => logPteroError('broadcast progress', err));
+    const payload = JSON.stringify(components);
+    for (const name of acted) {
+      const cmd = `tellraw @a[name=${name}] ${payload}`;
+      this.ptero.runCommand(cmd).catch((err) => logPteroError('broadcast progress', err));
+    }
   }
 
   /**
