@@ -573,9 +573,15 @@ export class PollManager {
     const label = ACTION_LABELS[action];
     const spawnCoords = this.cfg.SPAWN_COORDS;
     try {
-      await this.ptero.runCommand(`say ${sanitizeSayText(`Vote passed: ${label}. Executing now.`)}`);
+      const components = [
+        { text: '[VOTE] ', color: 'gold', bold: false },
+        { text: 'passed: ', bold: false },
+        { text: label, color: 'aqua', bold: false },
+        { text: ' — executing now.', color: 'green', bold: false },
+      ];
+      await this.ptero.runCommand(`tellraw @a ${JSON.stringify(components)}`);
     } catch (err) {
-      logPteroError('executeAction passed-say', err);
+      logPteroError('executeAction passed-tellraw', err);
     }
 
     if (isPowerAction(action)) {
@@ -600,9 +606,13 @@ export class PollManager {
       if (tps) {
         this.lastTps = tps;
         try {
-          await this.ptero.runCommand(`say ${sanitizeSayText(tps)}`);
+          const components = [
+            { text: '[TPS] ', color: 'gold', bold: false },
+            { text: tps, color: 'aqua', bold: false },
+          ];
+          await this.ptero.runCommand(`tellraw @a ${JSON.stringify(components)}`);
         } catch (err) {
-          logPteroError('executeAction tps-say', err);
+          logPteroError('executeAction tps-tellraw', err);
         }
         this.onChange();
       }
@@ -628,10 +638,3 @@ function logPteroError(action: string, err: unknown): void {
   console.error(`[ptero] ${action}: ${trimmed}`);
 }
 
-/**
- * Pterodactyl `say` argument: strip any control or section-sign sequences so
- * the message stays plain ASCII in-game.
- */
-function sanitizeSayText(s: string): string {
-  return s.replace(/§./g, '').replace(/[\x00-\x1f\x7f]/g, ' ');
-}

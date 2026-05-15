@@ -411,7 +411,7 @@ test('vote() during an ongoing poll emits a tellraw and no say', async () => {
   db.raw.close();
 });
 
-test('a poll that passes emits a `say Vote passed:` (kept) and runs the action', async () => {
+test('a poll that passes emits a styled tellraw pass-announcement and runs the action', async () => {
   const cfg = makeCfg();
   const db = makeDb();
   const roster = new Roster();
@@ -438,8 +438,8 @@ test('a poll that passes emits a `say Vote passed:` (kept) and runs the action',
   assert.equal(res.result.executed, true);
   await new Promise((r) => setTimeout(r, 30));
 
-  const passedSay = cmds.find((c) => c.startsWith('say ') && c.includes('Vote passed:'));
-  assert.ok(passedSay, `expected pass-announcement say, got: ${cmds.join(' | ')}`);
+  const passed = cmds.find((c) => c.startsWith('tellraw @a ') && c.includes('passed:'));
+  assert.ok(passed, `expected pass-announcement tellraw, got: ${cmds.join(' | ')}`);
   db.raw.close();
 });
 

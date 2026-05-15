@@ -54,9 +54,16 @@ export class OperatorExec {
     this.polls.applyCooldown(action);
 
     const label = ACTION_LABELS[action];
+    const announce = [
+      { text: '[OP] ', color: 'gold', bold: false },
+      { text: ign, color: 'yellow', bold: false },
+      { text: ' ran ', bold: false },
+      { text: label, color: 'aqua', bold: false },
+      { text: '.', bold: false },
+    ];
     this.ptero
-      .runCommand(`say ${sanitize(`Operator ${ign} ran ${label}.`)}`)
-      .catch((err) => logOpError('execute say', err));
+      .runCommand(`tellraw @a ${JSON.stringify(announce)}`)
+      .catch((err) => logOpError('execute announce', err));
 
     if (isPowerAction(action)) {
       this.ptero.power('restart').catch((err) => logOpError('execute power', err));
@@ -72,9 +79,13 @@ export class OperatorExec {
           .then((tps) => {
             if (!tps) return;
             this.polls.setLastTps(tps);
+            const components = [
+              { text: '[TPS] ', color: 'gold', bold: false },
+              { text: tps, color: 'aqua', bold: false },
+            ];
             this.ptero
-              .runCommand(`say ${sanitize(tps)}`)
-              .catch((err) => logOpError('execute tps-say', err));
+              .runCommand(`tellraw @a ${JSON.stringify(components)}`)
+              .catch((err) => logOpError('execute tps-tellraw', err));
           })
           .catch((err) => logOpError('execute captureTps', err));
       }
@@ -101,10 +112,6 @@ function isOperatorAction(v: unknown): v is Action {
     default:
       return false;
   }
-}
-
-function sanitize(s: string): string {
-  return s.replace(/§./g, '').replace(/[\x00-\x1f\x7f]/g, ' ');
 }
 
 function logOpError(action: string, err: unknown): void {
