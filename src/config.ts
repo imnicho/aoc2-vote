@@ -123,7 +123,7 @@ export function loadConfig(): Config {
     DB_PATH: process.env.DB_PATH || '/data/aoc2-vote.db',
     POLL_TTL_MS: intEnv('POLL_TTL_MS', 300_000),
     COOLDOWN_MS: intEnv('COOLDOWN_MS', 600_000),
-    ROSTER_REFRESH_MS: intEnv('ROSTER_REFRESH_MS', 5_000),
+    ROSTER_REFRESH_MS: intEnv('ROSTER_REFRESH_MS', 30_000),
     OPERATOR_IGNS: operatorIgns,
     SESSION_SECRET: sessionSecret,
     SESSION_TTL_MS: intEnv('SESSION_TTL_MS', 4 * 60 * 60 * 1000),

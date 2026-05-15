@@ -46,7 +46,7 @@ missing.
 | `DB_PATH`            | `/data/aoc2-vote.db`   | SQLite file (Coolify volume) |
 | `POLL_TTL_MS`        | `300000` (5 min)       | poll expiry |
 | `COOLDOWN_MS`        | `600000` (10 min)      | per-action cooldown after passing/expiring |
-| `ROSTER_REFRESH_MS`  | `5000`                 | how often to send `list` and poll resources |
+| `ROSTER_REFRESH_MS`  | `30000`                | how often to send `list` and poll resources (live roster updates come from websocket join/leave events; this is reconciliation) |
 | `OPERATOR_IGNS`      | (empty)                | comma-separated allowlist of IGNs that receive `is_operator:true` in their session token. Lowercased on parse. Empty disables operator-mode entirely. |
 | `SESSION_SECRET`     | —                      | 32+ byte random secret used to sign HMAC mint + session tokens. Required outside dry-run. |
 | `SESSION_TTL_MS`     | `14400000` (4 h)       | bearer session lifetime |
